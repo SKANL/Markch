@@ -1,12 +1,12 @@
-# Scratch
+# Markch
 
-<img src="docs/app-icon.png" alt="Scratch" width="128" height="128" style="border-radius: 22px; margin-bottom: 8px;">
+<img src="docs/app-icon.png" alt="Markch" width="128" height="128" style="border-radius: 22px; margin-bottom: 8px;">
 
 A minimalist, offline-first markdown note-taking app for macOS, Windows, and Linux.
 
 ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey) ![Windows](https://img.shields.io/badge/platform-Windows-blue) ![Linux](https://img.shields.io/badge/platform-Linux-orange)
 
-[Website](https://www.ericli.io/scratch) · [Releases](https://github.com/erictli/scratch/releases)
+[Repository](https://github.com/SKANL/Markch) · [Releases](https://github.com/SKANL/Markch/releases)
 
 ## Features
 
@@ -35,28 +35,7 @@ A minimalist, offline-first markdown note-taking app for macOS, Windows, and Lin
 
 ## Installation
 
-### macOS
-
-**Homebrew (Recommended)**
-
-```bash
-brew tap erictli/tap
-brew install --cask erictli/tap/scratch
-```
-
-**Manual Download**
-
-1. Download the latest `.dmg` from [Releases](https://github.com/erictli/scratch/releases)
-2. Open the DMG and drag Scratch to Applications
-3. Open Scratch from Applications
-
-### Windows
-
-Download the latest `.exe` installer from [Releases](https://github.com/erictli/scratch/releases) and run it. WebView2 will be downloaded automatically if needed.
-
-### Linux
-
-Download the latest `.AppImage` or `.deb` from [Releases](https://github.com/erictli/scratch/releases).
+Packaged Markch releases are not published yet. For now, build from source.
 
 ### From Source
 
@@ -65,8 +44,8 @@ Download the latest `.AppImage` or `.deb` from [Releases](https://github.com/eri
 **macOS:** Xcode Command Line Tools · **Windows:** WebView2 Runtime (pre-installed on Windows 11)
 
 ```bash
-git clone https://github.com/erictli/scratch.git
-cd scratch
+git clone https://github.com/SKANL/Markch.git
+cd Markch
 npm install
 npm run tauri dev      # Development
 npm run tauri build    # Production build
@@ -74,7 +53,7 @@ npm run tauri build    # Production build
 
 ## Keyboard Shortcuts
 
-Scratch is designed to be usable without a mouse. Here are the essentials to get started:
+Markch is designed to be usable without a mouse. Here are the essentials to get started:
 
 | Shortcut          | Action                 |
 | ----------------- | ---------------------- |
@@ -98,24 +77,16 @@ Scratch is designed to be usable without a mouse. Here are the essentials to get
 
 **Note:** On Windows, use `Ctrl` instead of `Cmd` for all shortcuts.
 
-Many more shortcuts and features are available in the app—explore via the command palette (`Cmd+P` / `Ctrl+P`) or view the full reference in Settings → Shortcuts.
+Many more shortcuts and features are available in the app. Explore via the command palette (`Cmd+P` / `Ctrl+P`) or view the full reference in Settings -> Shortcuts.
 
 ## Built With
 
 [Tauri](https://tauri.app/) · [React](https://react.dev/) · [TipTap](https://tiptap.dev/) · [Tailwind CSS](https://tailwindcss.com/) · [Tantivy](https://github.com/quickwit-oss/tantivy)
 
-## Contributing
+## Upstream
 
-Contributions and suggestions are welcome. Scratch is actively maintained but the release cycle is at the whim of my schedule – sometimes I'll review and merge same-day, sometimes it may take several weeks.
-
-What makes Scratch special is its minimal feature set and focus on user experience. We're not trying to build Obsidian or Notion, so not every feature will be a fit.
-
-**Small fixes and improvements:** go ahead and open a PR, we'll try to merge these in regularly.
-
-**Bigger changes:** if you're not sure whether a feature fits, open an issue first and ask.
-
-**Review process:** I generally won't go back and forth with review comments. Try to address any CodeRabbit comments on your PR. From there, I'll make any additional changes directly.
+Markch is based on [Scratch](https://github.com/erictli/scratch), an MIT-licensed offline markdown notes app by Eric Li and contributors. The current Markch adoption keeps Scratch's feature set while replacing project identity, release targets, and updater configuration.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

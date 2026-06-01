@@ -1,8 +1,10 @@
-# Scratch - Development Guide
+# Markch - Development Guide
 
 ## Project Overview
 
-Scratch is a cross-platform markdown note-taking app for macOS, Windows, and Linux, built with Tauri v2 (Rust backend) + React/TypeScript/Tailwind (frontend) + TipTap (WYSIWYG editor) + Tantivy (full-text search).
+Markch is a cross-platform markdown note-taking app for macOS, Windows, and Linux, built with Tauri v2 (Rust backend) + React/TypeScript/Tailwind (frontend) + TipTap (WYSIWYG editor) + Tantivy (full-text search).
+
+Markch is based on Scratch and currently preserves Scratch's feature set while using Markch project identity and release targets.
 
 ## Commands
 
@@ -21,8 +23,9 @@ Runs on every push to `main` and on PRs. Validates frontend build (`tsc` + Vite)
 
 - All backend operations go through Tauri commands in `src-tauri/src/lib.rs`. Frontend calls them via `invoke()` from `@tauri-apps/api/core`.
 - `NotesContext` uses a dual context pattern (data/actions separated) for performance.
-- Settings live in two places: app config at `{APP_DATA}/config.json`, per-folder settings at `{NOTES_FOLDER}/.scratch/settings.json`.
+- Settings live in two places: app config at `{APP_DATA}/config.json`, per-folder settings at `{NOTES_FOLDER}/.markch/settings.json`.
 - Tauri v2 permissions go in `src-tauri/capabilities/default.json`.
+- App updater checks are temporarily disabled until Markch has its own signed release channel.
 
 ## Coding Conventions
 
@@ -39,7 +42,7 @@ Runs on every push to `main` and on PRs. Validates frontend build (`tsc` + Vite)
 ## Releasing
 
 1. Bump version in `package.json` and `src-tauri/tauri.conf.json`
-2. Commit to `main`, then tag and push: `git tag v0.5.0 && git push origin v0.5.0`
-3. The release workflow builds all platforms and creates a draft GitHub release
-4. Update the description in `latest.json` from GitHub after the action finishes
+2. Configure Markch's updater signing key and release endpoint before enabling updater artifacts
+3. Commit to `main`, then tag and push: `git tag v0.5.0 && git push origin v0.5.0`
+4. The release workflow builds all platforms and creates a draft GitHub release
 5. Review, edit notes, and publish

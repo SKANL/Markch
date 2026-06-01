@@ -129,7 +129,7 @@ export function GeneralSettingsSection() {
 
       if (selected) {
         await setNotesFolder(selected);
-        // Reload theme/font settings from the new folder's .scratch/settings.json
+        // Reload theme/font settings from the new folder's .markch/settings.json
         await reloadSettings();
       }
     } catch (err) {

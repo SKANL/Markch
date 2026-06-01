@@ -68,7 +68,7 @@ import { SlashCommand } from "./SlashCommand";
 import { Wikilink, type WikilinkStorage } from "./Wikilink";
 import { WikilinkSuggestion } from "./WikilinkSuggestion";
 import { EditorWidthHandles } from "./EditorWidthHandle";
-import { ScratchBlockMath, normalizeBlockMath } from "./MathExtensions";
+import { MarkchBlockMath, normalizeBlockMath } from "./MathExtensions";
 import { cn } from "../../lib/utils";
 import { plainTextFromMarkdown } from "../../lib/plainText";
 import { Button, IconButton, ToolbarButton, Tooltip } from "../ui";
@@ -1117,7 +1117,7 @@ export function Editor({
       SlashCommand,
       Wikilink,
       WikilinkSuggestion,
-      ScratchBlockMath.configure({
+      MarkchBlockMath.configure({
         katexOptions: {
           throwOnError: false,
           displayMode: true,

@@ -30,6 +30,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as aiService from "./services/ai";
 import type { AiProvider } from "./services/ai";
 
+const UPDATES_ENABLED = false;
+
 // Detect preview mode from URL search params
 function getWindowMode(): {
   isPreview: boolean;
@@ -76,7 +78,7 @@ function AppContent() {
   const [aiProvider, setAiProvider] = useState<AiProvider>("claude");
   const editorRef = useRef<TiptapEditor | null>(null);
 
-  // Listen for set-notes-folder event from CLI (scratch .)
+  // Listen for set-notes-folder event from CLI (markch .)
   // Placed here in AppContent where both NotesContext and ThemeContext are available
   useEffect(() => {
     let cancelled = false;
@@ -453,7 +455,7 @@ function AppContent() {
       <div className="h-full min-h-0 flex items-center justify-center bg-bg-secondary">
         <div className="text-text-muted/70 text-sm flex items-center gap-1.5 font-medium">
           <SpinnerIcon className="w-4.5 h-4.5 stroke-[1.5] animate-spin" />
-          Initializing Scratch...
+          Initializing Markch...
         </div>
       </div>
     );
@@ -555,7 +557,13 @@ function AppContent() {
 }
 
 // Shared update check — used by startup and manual "Check for Updates"
-async function showUpdateToast(): Promise<"update" | "no-update" | "error"> {
+async function showUpdateToast(): Promise<
+  "update" | "no-update" | "disabled" | "error"
+> {
+  if (!UPDATES_ENABLED) {
+    return "disabled";
+  }
+
   try {
     const update = await checkForUpdate();
     if (update) {
@@ -598,7 +606,7 @@ function UpdateToast({
     try {
       await update.downloadAndInstall();
       toast.dismiss(toastId);
-      toast.success("Update installed! Restart Scratch to apply.", {
+      toast.success("Update installed! Restart Markch to apply.", {
         duration: Infinity,
         closeButton: true,
       });
@@ -655,7 +663,7 @@ function App() {
 
   // Check for app updates on startup (folder mode only)
   useEffect(() => {
-    if (isPreview) return;
+    if (isPreview || !UPDATES_ENABLED) return;
     const timer = setTimeout(() => showUpdateToast(), 3000);
     return () => clearTimeout(timer);
   }, [isPreview]);
