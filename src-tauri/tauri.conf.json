@@ -39,7 +39,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "fileAssociations": [
       {
         "ext": ["md", "markdown"],
@@ -61,6 +61,14 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUzNDY3RUQzQzZCRjZDOTkKUldTWmJML0cwMzVHVTkrVmFvSVJVUHZGSEJuVGdFL1BOdCs1Nkh4dEgxS204NnB3dnlSMnlEa1gK",
+      "endpoints": [
+        "https://github.com/SKANL/Markch/releases/latest/download/latest.json"
+      ]
     }
   }
 }
