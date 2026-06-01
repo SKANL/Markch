@@ -30,7 +30,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as aiService from "./services/ai";
 import type { AiProvider } from "./services/ai";
 
-const UPDATES_ENABLED = false;
+const UPDATES_ENABLED = true;
 
 // Detect preview mode from URL search params
 function getWindowMode(): {
