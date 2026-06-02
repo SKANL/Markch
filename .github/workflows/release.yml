@@ -65,7 +65,117 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Markch v__VERSION__"
-          releaseBody: "See the release page for full details. Download the app for your platform below."
+          releaseBody: "Release assets are still being finalized by GitHub Actions."
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  finalize-release:
+    needs: build-and-release
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            version="$(python3 -c "import json; print(json.load(open('package.json'))['version'])")"
+            tag="v${version}"
+          fi
+          version="${tag#v}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          for attempt in {1..20}; do
+            if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == "20" ]]; then
+              echo "Release $TAG_NAME was not found after waiting."
+              exit 1
+            fi
+            sleep 10
+          done
+          gh release download "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets \
+            --skip-existing
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd release-assets
+          rm -f SHA256SUMS.txt
+          find . -maxdepth 1 -type f -printf '%f\n' \
+            | sort \
+            | xargs -r sha256sum > SHA256SUMS.txt
+
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          gh release upload "$TAG_NAME" release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Render release notes
+        env:
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}"
+          cat > release-body.md <<EOF
+          Markch ${VERSION} is the first Markch release built from the adopted Scratch fork. It keeps the current offline markdown notes workflow and adds Markch-owned release/update infrastructure.
+
+          ## Downloads
+
+          | OS | Recommended download | Alternative packages |
+          | --- | --- | --- |
+          | Windows | [Markch_${VERSION}_x64-setup.exe](${base_url}/Markch_${VERSION}_x64-setup.exe) | [MSI](${base_url}/Markch_${VERSION}_x64_en-US.msi) |
+          | macOS | [Markch_${VERSION}_universal.dmg](${base_url}/Markch_${VERSION}_universal.dmg) | [App tarball](${base_url}/Markch_universal.app.tar.gz) |
+          | Linux | [AppImage](${base_url}/Markch_${VERSION}_amd64.AppImage) | [Debian package](${base_url}/Markch_${VERSION}_amd64.deb), [RPM package](${base_url}/Markch-${VERSION}-1.x86_64.rpm) |
+
+          ## macOS Notice
+
+          The macOS build is unsigned and not notarized because Markch does not currently use a paid Apple Developer Program account. macOS Gatekeeper may require using **Open Anyway** from System Settings or opening the app through Finder's context menu.
+
+          ## Verification
+
+          Download [SHA256SUMS.txt](${base_url}/SHA256SUMS.txt) and compare the checksum for your installer before running it.
+
+          Files ending in `.sig` are Tauri updater signatures used by Markch's automatic update system. They are not Apple Developer ID signatures and do not replace macOS notarization.
+
+          ## Automatic Updates
+
+          This release includes [latest.json](${base_url}/latest.json), which Markch uses to discover signed updater artifacts after the draft release is reviewed and published.
+
+          ## Open Source Attribution
+
+          Markch is based on Scratch, an MIT-licensed offline markdown notes app by Eric Li and contributors.
+          EOF
+
+      - name: Update release draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          gh release edit "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes-file release-body.md \
+            --draft
