@@ -158,7 +158,7 @@ jobs:
 
           Download [SHA256SUMS.txt](${base_url}/SHA256SUMS.txt) and compare the checksum for your installer before running it.
 
-          Files ending in `.sig` are Tauri updater signatures used by Markch's automatic update system. They are not Apple Developer ID signatures and do not replace macOS notarization.
+          Files ending in .sig are Tauri updater signatures used by Markch's automatic update system. They are not Apple Developer ID signatures and do not replace macOS notarization.
 
           ## Automatic Updates
 
