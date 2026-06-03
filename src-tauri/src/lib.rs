@@ -1861,6 +1861,25 @@ async fn read_document_markdown(
 }
 
 #[tauri::command]
+async fn save_document_markdown(
+    document_path: String,
+    markdown: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let detail = document::save_document_markdown(&folder_path, &document_path, &markdown, word_limit)?;
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+    Ok(detail)
+}
+
+#[tauri::command]
 async fn read_document_for_note(
     note_id: String,
     state: State<'_, AppState>,
@@ -1936,6 +1955,24 @@ async fn normalize_document_for_note(
         if let Some(ref search_index) = *index {
             let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
         }
+    }
+    Ok(detail)
+}
+
+#[tauri::command]
+async fn normalize_document(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let detail = document::normalize_document(&folder_path, &document_path, word_limit)?;
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
     }
     Ok(detail)
 }
@@ -4026,12 +4063,14 @@ pub fn run() {
             list_documents,
             read_document,
             read_document_markdown,
+            save_document_markdown,
             read_document_for_note,
             create_document_page,
             rename_document_page,
             delete_document_page,
             move_document_page,
             normalize_document_for_note,
+            normalize_document,
             get_settings,
             update_settings,
             update_git_enabled,

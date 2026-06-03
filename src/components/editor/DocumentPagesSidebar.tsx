@@ -23,6 +23,7 @@ import {
   CopyIcon,
   FolderIcon,
   PencilIcon,
+  RefreshCwIcon,
   TrashIcon,
 } from "../icons";
 import { FolderNameDialog } from "../notes/FolderNameDialog";
@@ -35,24 +36,33 @@ const menuSeparatorClass = "h-px bg-border my-1";
 interface DocumentPagesSidebarProps {
   document: DocumentDetail;
   currentNoteId: string;
+  mode: "page" | "all";
+  onModeChange: (mode: "page" | "all") => Promise<void> | void;
   onSelectPage: (id: string) => Promise<void>;
   onDocumentChange: (document: DocumentDetail) => void;
   onRefreshNotes: () => Promise<void>;
+  onNormalizeDocument: () => Promise<void>;
+  isDocumentBusy?: boolean;
 }
 
 export function DocumentPagesSidebar({
   document,
   currentNoteId,
+  mode,
+  onModeChange,
   onSelectPage,
   onDocumentChange,
   onRefreshNotes,
+  onNormalizeDocument,
+  isDocumentBusy = false,
 }: DocumentPagesSidebarProps) {
   const [renamingPage, setRenamingPage] = useState<DocumentPage | null>(null);
   const [deletingPage, setDeletingPage] = useState<DocumentPage | null>(null);
   const [isWorking, setIsWorking] = useState(false);
+  const isBusy = isWorking || isDocumentBusy;
 
   async function handleCreatePage() {
-    if (isWorking) return;
+    if (isBusy) return;
     setIsWorking(true);
     try {
       const next = await notesService.createDocumentPage(document.path);
@@ -69,7 +79,7 @@ export function DocumentPagesSidebar({
   }
 
   async function handleRenamePage(name: string) {
-    if (!renamingPage || isWorking) return;
+    if (!renamingPage || isBusy) return;
     setIsWorking(true);
     const oldIndex = renamingPage.index - 1;
     try {
@@ -94,7 +104,7 @@ export function DocumentPagesSidebar({
   }
 
   async function handleDeletePage() {
-    if (!deletingPage || isWorking) return;
+    if (!deletingPage || isBusy) return;
     setIsWorking(true);
     try {
       const deletedIndex = deletingPage.index - 1;
@@ -118,7 +128,7 @@ export function DocumentPagesSidebar({
   }
 
   async function handleMovePage(page: DocumentPage, direction: "up" | "down") {
-    if (isWorking) return;
+    if (isBusy) return;
     setIsWorking(true);
     const oldIndex = page.index - 1;
     try {
@@ -181,6 +191,32 @@ export function DocumentPagesSidebar({
         <div className="text-xs text-text-muted">
           {document.pages.length} {document.pages.length === 1 ? "page" : "pages"}
         </div>
+        <div className="mt-2 grid grid-cols-2 gap-1 rounded-md bg-bg-muted p-0.5">
+          <button
+            type="button"
+            className={`h-7 rounded text-xs font-medium transition-colors ${
+              mode === "page"
+                ? "bg-bg text-text shadow-sm"
+                : "text-text-muted hover:text-text"
+            }`}
+            disabled={isBusy}
+            onClick={() => onModeChange("page")}
+          >
+            Page
+          </button>
+          <button
+            type="button"
+            className={`h-7 rounded text-xs font-medium transition-colors ${
+              mode === "all"
+                ? "bg-bg text-text shadow-sm"
+                : "text-text-muted hover:text-text"
+            }`}
+            disabled={isBusy}
+            onClick={() => onModeChange("all")}
+          >
+            All Pages
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
@@ -221,7 +257,7 @@ export function DocumentPagesSidebar({
                   <div className="hidden group-hover:flex px-1.5 pb-1.5 gap-1">
                     <IconButton
                       onClick={() => handleMovePage(page, "up")}
-                      disabled={index === 0 || isWorking}
+                      disabled={index === 0 || isBusy}
                       title="Move page up"
                       className="h-6 w-6"
                     >
@@ -229,7 +265,7 @@ export function DocumentPagesSidebar({
                     </IconButton>
                     <IconButton
                       onClick={() => handleMovePage(page, "down")}
-                      disabled={index === document.pages.length - 1 || isWorking}
+                      disabled={index === document.pages.length - 1 || isBusy}
                       title="Move page down"
                       className="h-6 w-6"
                     >
@@ -237,7 +273,7 @@ export function DocumentPagesSidebar({
                     </IconButton>
                     <IconButton
                       onClick={() => setRenamingPage(page)}
-                      disabled={isWorking}
+                      disabled={isBusy}
                       title="Rename page"
                       className="h-6 w-6"
                     >
@@ -245,7 +281,7 @@ export function DocumentPagesSidebar({
                     </IconButton>
                     <IconButton
                       onClick={() => setDeletingPage(page)}
-                      disabled={document.pages.length <= 1 || isWorking}
+                      disabled={document.pages.length <= 1 || isBusy}
                       title="Delete page"
                       className="h-6 w-6"
                     >
@@ -258,6 +294,7 @@ export function DocumentPagesSidebar({
                 <ContextMenu.Content className="min-w-48 bg-bg border border-border rounded-md shadow-lg py-1 z-50">
                   <ContextMenu.Item
                     className={menuItemClass}
+                    disabled={isBusy}
                     onSelect={() => setRenamingPage(page)}
                   >
                     <PencilIcon className="w-4 h-4 stroke-[1.6]" />
@@ -265,7 +302,7 @@ export function DocumentPagesSidebar({
                   </ContextMenu.Item>
                   <ContextMenu.Item
                     className={menuItemClass}
-                    disabled={index === 0 || isWorking}
+                    disabled={index === 0 || isBusy}
                     onSelect={() => handleMovePage(page, "up")}
                   >
                     <ArrowUpIcon className="w-4 h-4 stroke-[1.6]" />
@@ -273,7 +310,7 @@ export function DocumentPagesSidebar({
                   </ContextMenu.Item>
                   <ContextMenu.Item
                     className={menuItemClass}
-                    disabled={index === document.pages.length - 1 || isWorking}
+                    disabled={index === document.pages.length - 1 || isBusy}
                     onSelect={() => handleMovePage(page, "down")}
                   >
                     <ChevronDownIcon className="w-4 h-4 stroke-[1.6]" />
@@ -300,7 +337,7 @@ export function DocumentPagesSidebar({
                       menuItemClass +
                       " text-red-500 hover:text-red-500 focus:text-red-500"
                     }
-                    disabled={document.pages.length <= 1 || isWorking}
+                    disabled={document.pages.length <= 1 || isBusy}
                     onSelect={() => setDeletingPage(page)}
                   >
                     <TrashIcon className="w-4 h-4 stroke-[1.6]" />
@@ -318,8 +355,19 @@ export function DocumentPagesSidebar({
           type="button"
           variant="ghost"
           size="sm"
+          className="w-full justify-start gap-2 mb-1"
+          disabled={isBusy}
+          onClick={onNormalizeDocument}
+        >
+          <RefreshCwIcon className="w-4 h-4 stroke-[1.6]" />
+          Normalize
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
           className="w-full justify-start gap-2"
-          disabled={isWorking}
+          disabled={isBusy}
           onClick={handleCreatePage}
         >
           <AddNoteIcon className="w-4 h-4 stroke-[1.6]" />

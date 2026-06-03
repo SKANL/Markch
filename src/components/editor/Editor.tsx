@@ -451,6 +451,8 @@ interface EditorProps {
   saveToFolderDisabled?: boolean;
 }
 
+type DocumentSaveStatus = "saved" | "unsaved" | "saving" | "error";
+
 /**
  * Get character offsets where each top-level block starts in markdown.
  * Blocks are separated by blank lines, with awareness of code fences
@@ -557,6 +559,12 @@ export function Editor({
   const [documentDetail, setDocumentDetail] = useState<DocumentDetail | null>(
     null,
   );
+  const [documentEditMode, setDocumentEditMode] = useState<"page" | "all">(
+    "page",
+  );
+  const [documentSaveStatus, setDocumentSaveStatus] =
+    useState<DocumentSaveStatus>("saved");
+  const [isNormalizingDocument, setIsNormalizingDocument] = useState(false);
   // Delay transition classes until after initial mount to avoid format bar height animation on note load
   const [hasTransitioned, setHasTransitioned] = useState(false);
   useEffect(() => {
@@ -593,6 +601,11 @@ export function Editor({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<TiptapEditor | null>(null);
   const currentNoteIdRef = useRef<string | null>(null);
+  const documentEditModeRef = useRef<"page" | "all">("page");
+  const allPagesDocumentPathRef = useRef<string | null>(null);
+  const allPagesSaveInFlightRef = useRef(false);
+  const allPagesQueuedContentRef = useRef<string | null>(null);
+  const allPagesCurrentSaveRef = useRef<Promise<void> | null>(null);
   // Track if we need to save (use ref to avoid computing markdown on every keystroke)
   const needsSaveRef = useRef(false);
   // Stable refs for wikilink click handler (avoids re-registering listener on every notes change)
@@ -603,6 +616,7 @@ export function Editor({
 
   // Keep ref in sync with current note ID
   currentNoteIdRef.current = currentNote?.id ?? null;
+  documentEditModeRef.current = documentEditMode;
 
   // Get markdown from editor
   const getMarkdown = useCallback(
@@ -617,6 +631,45 @@ export function Editor({
       }
       // Fallback to plain text
       return editorInstance.getText();
+    },
+    [],
+  );
+
+  const saveAllPagesDocument = useCallback(
+    async (documentPath: string, content: string) => {
+      allPagesQueuedContentRef.current = content;
+      if (allPagesSaveInFlightRef.current) {
+        setDocumentSaveStatus("unsaved");
+        await allPagesCurrentSaveRef.current;
+        return;
+      }
+
+      const savePromise = (async () => {
+        allPagesSaveInFlightRef.current = true;
+        try {
+          while (allPagesQueuedContentRef.current !== null) {
+            const nextContent = allPagesQueuedContentRef.current;
+            allPagesQueuedContentRef.current = null;
+            setDocumentSaveStatus("saving");
+            const next = await notesService.saveDocumentMarkdown(
+              documentPath,
+              nextContent,
+            );
+            setDocumentDetail(next);
+            await notesCtxRef.current?.refreshNotes();
+            setDocumentSaveStatus("saved");
+          }
+        } catch (error) {
+          setDocumentSaveStatus("error");
+          throw error;
+        } finally {
+          allPagesSaveInFlightRef.current = false;
+          allPagesCurrentSaveRef.current = null;
+        }
+      })();
+
+      allPagesCurrentSaveRef.current = savePromise;
+      await savePromise;
     },
     [],
   );
@@ -637,6 +690,12 @@ export function Editor({
     let active = true;
     if (!currentNote?.id || previewMode || settings?.documentsEnabled !== true) {
       setDocumentDetail(null);
+      setDocumentEditMode("page");
+      setDocumentSaveStatus("saved");
+      allPagesDocumentPathRef.current = null;
+      return;
+    }
+    if (documentEditMode === "all") {
       return;
     }
 
@@ -660,6 +719,7 @@ export function Editor({
     previewMode,
     settings?.documentsEnabled,
     settings?.documentPageWordLimit,
+    documentEditMode,
   ]);
 
   // Calculate if current note is pinned
@@ -765,12 +825,17 @@ export function Editor({
       setIsSaving(true);
       try {
         lastSaveRef.current = { noteId, content };
-        await saveNote(content, noteId);
+        const documentPath = allPagesDocumentPathRef.current;
+        if (documentEditModeRef.current === "all" && documentPath) {
+          await saveAllPagesDocument(documentPath, content);
+        } else {
+          await saveNote(content, noteId);
+        }
       } finally {
         setIsSaving(false);
       }
     },
-    [saveNote],
+    [saveAllPagesDocument, saveNote],
   );
 
   // Flush any pending save immediately (saves to the note currently loaded in editor)
@@ -780,13 +845,38 @@ export function Editor({
       saveTimeoutRef.current = null;
     }
 
-    // Use loadedNoteIdRef (the note in the editor) not currentNoteIdRef (which may have changed)
-    if (needsSaveRef.current && editorRef.current && loadedNoteIdRef.current) {
+    if (needsSaveRef.current && editorRef.current) {
       needsSaveRef.current = false;
       const markdown = getMarkdown(editorRef.current);
-      await saveImmediately(loadedNoteIdRef.current, markdown);
+      const targetId =
+        documentEditModeRef.current === "all" && allPagesDocumentPathRef.current
+          ? `document:${allPagesDocumentPathRef.current}`
+          : loadedNoteIdRef.current;
+      if (targetId) {
+        await saveImmediately(targetId, markdown);
+      }
     }
   }, [saveImmediately, getMarkdown]);
+
+  const flushAllPagesOrPendingSave = useCallback(async () => {
+    if (
+      documentEditModeRef.current === "all" &&
+      allPagesDocumentPathRef.current &&
+      editorRef.current
+    ) {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+      needsSaveRef.current = false;
+      await saveAllPagesDocument(
+        allPagesDocumentPathRef.current,
+        getMarkdown(editorRef.current),
+      );
+      return;
+    }
+    await flushPendingSave();
+  }, [flushPendingSave, getMarkdown, saveAllPagesDocument]);
 
   // Schedule a debounced save (markdown computed only when timer fires)
   const scheduleSave = useCallback(() => {
@@ -794,13 +884,24 @@ export function Editor({
       clearTimeout(saveTimeoutRef.current);
     }
 
-    const savingNoteId = currentNote?.id;
+    const isAllPagesSave =
+      documentEditModeRef.current === "all" && allPagesDocumentPathRef.current;
+    const savingNoteId = isAllPagesSave
+      ? `document:${allPagesDocumentPathRef.current}`
+      : currentNote?.id;
     if (!savingNoteId) return;
 
     needsSaveRef.current = true;
+    if (isAllPagesSave) {
+      setDocumentSaveStatus("unsaved");
+    }
 
     saveTimeoutRef.current = window.setTimeout(async () => {
-      if (currentNoteIdRef.current !== savingNoteId || !needsSaveRef.current) {
+      const activeTargetId =
+        documentEditModeRef.current === "all" && allPagesDocumentPathRef.current
+          ? `document:${allPagesDocumentPathRef.current}`
+          : currentNoteIdRef.current;
+      if (activeTargetId !== savingNoteId || !needsSaveRef.current) {
         return;
       }
 
@@ -808,9 +909,13 @@ export function Editor({
       if (editorRef.current) {
         needsSaveRef.current = false;
         const markdown = getMarkdown(editorRef.current);
-        await saveImmediately(savingNoteId, markdown);
+        try {
+          await saveImmediately(savingNoteId, markdown);
+        } catch (error) {
+          console.error("Failed to save note:", error);
+        }
       }
-    }, 500);
+    }, isAllPagesSave ? 2500 : 500);
   }, [saveImmediately, getMarkdown, currentNote?.id]);
 
   const closeBlockMathPopup = useCallback(() => {
@@ -1422,6 +1527,14 @@ export function Editor({
     if (!currentNote || !editor) {
       return;
     }
+    if (documentEditModeRef.current === "all") {
+      const documentPath = allPagesDocumentPathRef.current;
+      if (documentPath && currentNote.id.startsWith(`${documentPath}/`)) {
+        return;
+      }
+      allPagesDocumentPathRef.current = null;
+      setDocumentEditMode("page");
+    }
 
     const isSameNote = currentNote.id === loadedNoteIdRef.current;
 
@@ -1572,8 +1685,13 @@ export function Editor({
         const markdown = manager
           ? manager.serialize(editorRef.current.getJSON())
           : editorRef.current.getText();
-        // Fire and forget - save will complete in background
-        saveNote(markdown);
+        const documentPath = allPagesDocumentPathRef.current;
+        if (documentEditModeRef.current === "all" && documentPath) {
+          void notesService.saveDocumentMarkdown(documentPath, markdown);
+        } else {
+          // Fire and forget - save will complete in background
+          saveNote(markdown);
+        }
       }
       if (linkPopupRef.current) {
         linkPopupRef.current.destroy();
@@ -1947,9 +2065,173 @@ export function Editor({
     }
   }, [documentDetail]);
 
+  const handleSelectDocumentPage = useCallback(
+    async (pageId: string) => {
+      if (!notesCtx?.selectNote) return;
+      if (documentEditModeRef.current !== "all") {
+        await notesCtx.selectNote(pageId);
+        return;
+      }
+
+      try {
+        const requestedIndex =
+          documentDetail?.pages.findIndex((page) => page.id === pageId) ?? -1;
+        await flushAllPagesOrPendingSave();
+        const documentPath = allPagesDocumentPathRef.current ?? documentDetail?.path;
+        allPagesDocumentPathRef.current = null;
+        setDocumentEditMode("page");
+        if (!documentPath) {
+          await notesCtx.selectNote(pageId);
+          return;
+        }
+        const next = await notesService.readDocument(documentPath);
+        setDocumentDetail(next);
+        await notesCtx.refreshNotes();
+        const target =
+          next.pages.find((page) => page.id === pageId) ??
+          (requestedIndex >= 0 ? next.pages[requestedIndex] : undefined) ??
+          next.pages[0];
+        if (target) await notesCtx.selectNote(target.id);
+      } catch (error) {
+        console.error("Failed to open Document page:", error);
+        toast.error("Failed to open page");
+      }
+    },
+    [documentDetail?.path, flushAllPagesOrPendingSave, notesCtx],
+  );
+
+  const handleSwitchDocumentMode = useCallback(
+    async (mode: "page" | "all") => {
+      if (!editor || !documentDetail || !notesCtx?.selectNote) return;
+
+      if (mode === "all") {
+        if (documentEditModeRef.current === "all") return;
+        try {
+          await flushPendingSave();
+          const markdown = await notesService.readDocumentMarkdown(documentDetail.path);
+          const manager = editor.storage.markdown?.manager;
+          isLoadingRef.current = true;
+          allPagesDocumentPathRef.current = documentDetail.path;
+          loadedNoteIdRef.current = `document:${documentDetail.path}`;
+          allPagesQueuedContentRef.current = null;
+          setDocumentSaveStatus("saved");
+          setDocumentEditMode("all");
+          setSourceMode(false);
+          if (manager) {
+            try {
+              editor.commands.setContent(manager.parse(markdown), {
+                emitUpdate: false,
+              });
+            } catch {
+              editor.commands.setContent(markdown, { emitUpdate: false });
+            }
+          } else {
+            editor.commands.setContent(markdown, { emitUpdate: false });
+          }
+          scrollContainerRef.current?.scrollTo(0, 0);
+        } catch (error) {
+          console.error("Failed to load full Document:", error);
+          toast.error("Failed to load full Document");
+        } finally {
+          isLoadingRef.current = false;
+        }
+        return;
+      }
+
+      if (documentEditModeRef.current !== "all") return;
+      try {
+        const currentPageIndex =
+          documentDetail.pages.findIndex((page) => page.id === currentNote?.id);
+        await flushAllPagesOrPendingSave();
+        const documentPath = allPagesDocumentPathRef.current ?? documentDetail.path;
+        allPagesDocumentPathRef.current = null;
+        setDocumentEditMode("page");
+        const next = await notesService.readDocument(documentPath);
+        setDocumentDetail(next);
+        await notesCtx.refreshNotes();
+        const currentId = currentNote?.id;
+        const target =
+          (currentId && next.pages.find((page) => page.id === currentId)) ??
+          (currentPageIndex >= 0 ? next.pages[currentPageIndex] : undefined) ??
+          next.pages[0];
+        if (target) await notesCtx.selectNote(target.id);
+      } catch (error) {
+        console.error("Failed to leave full Document mode:", error);
+        toast.error("Failed to switch Document mode");
+      }
+    },
+    [
+      currentNote?.id,
+      documentDetail,
+      editor,
+      flushAllPagesOrPendingSave,
+      flushPendingSave,
+      notesCtx,
+    ],
+  );
+
+  const handleNormalizeDocument = useCallback(async () => {
+    if (!documentDetail || !notesCtx?.refreshNotes || !notesCtx?.selectNote) return;
+    if (isNormalizingDocument) return;
+    setIsNormalizingDocument(true);
+    try {
+      const currentPageIndex =
+        documentDetail.pages.findIndex((page) => page.id === currentNote?.id);
+      await flushAllPagesOrPendingSave();
+      const documentPath = allPagesDocumentPathRef.current ?? documentDetail.path;
+      const next = await notesService.normalizeDocument(documentPath);
+      setDocumentDetail(next);
+      await notesCtx.refreshNotes();
+      allPagesDocumentPathRef.current = null;
+      setDocumentEditMode("page");
+      const currentId = currentNote?.id;
+      const target =
+        (currentId && next.pages.find((page) => page.id === currentId)) ??
+        (currentPageIndex >= 0 ? next.pages[currentPageIndex] : undefined) ??
+        next.pages[0];
+      if (target) await notesCtx.selectNote(target.id);
+      toast.success(`Document normalized: ${next.pages.length} ${next.pages.length === 1 ? "page" : "pages"}`);
+    } catch (error) {
+      console.error("Failed to normalize Document:", error);
+      toast.error("Failed to normalize Document");
+    } finally {
+      setIsNormalizingDocument(false);
+    }
+  }, [
+    currentNote?.id,
+    documentDetail,
+    flushAllPagesOrPendingSave,
+    isNormalizingDocument,
+    notesCtx,
+  ]);
+
+  const handleRetryAllPagesSave = useCallback(async () => {
+    const documentPath = allPagesDocumentPathRef.current;
+    if (!documentPath || !editorRef.current) return;
+    try {
+      await saveAllPagesDocument(documentPath, getMarkdown(editorRef.current));
+    } catch (error) {
+      console.error("Failed to retry full Document save:", error);
+    }
+  }, [getMarkdown, saveAllPagesDocument]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const documentPath = (event as CustomEvent<string>).detail;
+      if (documentPath !== documentDetail?.path) return;
+      void handleNormalizeDocument();
+    };
+    window.addEventListener("normalize-document", handler);
+    return () => window.removeEventListener("normalize-document", handler);
+  }, [documentDetail?.path, handleNormalizeDocument]);
+
   // Toggle source mode — computes anchor data and toggles state;
   // focus/scroll restoration happens in the useLayoutEffect below.
-  const toggleSourceMode = useCallback(() => {
+  const toggleSourceMode = useCallback(async () => {
+    if (documentEditModeRef.current === "all") {
+      await handleSwitchDocumentMode("page");
+      return;
+    }
     if (!editor) return;
     const container = scrollContainerRef.current;
 
@@ -2033,7 +2315,7 @@ export function Editor({
       }
       setSourceMode(false);
     }
-  }, [editor, sourceMode, sourceContent, getMarkdown]);
+  }, [editor, sourceMode, sourceContent, getMarkdown, handleSwitchDocumentMode]);
 
   // Restore focus and scroll position after source mode transitions.
   // useLayoutEffect runs synchronously after React commits DOM changes,
@@ -2108,7 +2390,9 @@ export function Editor({
 
   // Listen for toggle-source-mode custom event (from App.tsx shortcut / command palette)
   useEffect(() => {
-    const handler = () => toggleSourceMode();
+    const handler = () => {
+      void toggleSourceMode();
+    };
     window.addEventListener("toggle-source-mode", handler);
     return () => window.removeEventListener("toggle-source-mode", handler);
   }, [toggleSourceMode]);
@@ -2235,6 +2519,16 @@ export function Editor({
   const currentDocumentPage = documentDetail?.pages.find(
     (page) => page.id === currentNote.id,
   );
+  const isDocumentOperationBusy =
+    isNormalizingDocument || documentSaveStatus === "saving";
+  const allPagesStatusText =
+    documentSaveStatus === "unsaved"
+      ? "All Pages · Unsaved"
+      : documentSaveStatus === "saving"
+        ? "All Pages · Saving"
+        : documentSaveStatus === "error"
+          ? "All Pages · Save failed"
+          : "All Pages · Saved";
 
   return (
     <div className="flex-1 flex flex-col bg-bg overflow-hidden">
@@ -2265,6 +2559,20 @@ export function Editor({
           <span className="text-xs text-text-muted mb-px truncate">
             {formatDateTime(currentNote.modified)}
           </span>
+          {showDocumentMode && documentEditMode === "all" && (
+            <span className="ml-2 inline-flex items-center gap-1.5 rounded bg-bg-muted px-2 py-0.5 text-xs font-medium text-text-muted">
+              {allPagesStatusText}
+              {documentSaveStatus === "error" && (
+                <button
+                  type="button"
+                  className="rounded px-1 text-accent hover:bg-bg-emphasis"
+                  onClick={handleRetryAllPagesSave}
+                >
+                  Retry
+                </button>
+              )}
+            </span>
+          )}
         </div>
         <div
           className={`titlebar-no-drag flex items-center gap-px shrink-0 transition-opacity duration-400 ${needsSidebarDelay ? "delay-200" : ""} ${focusMode ? "opacity-0 pointer-events-none" : "opacity-100"}`}
@@ -2344,7 +2652,7 @@ export function Editor({
                   : `View Markdown Source (${mod}${isMac ? "" : "+"}${shift}${isMac ? "" : "+"}M)`
               }
             >
-              <IconButton onClick={toggleSourceMode}>
+              <IconButton onClick={() => void toggleSourceMode()}>
                 {sourceMode ? (
                   <MarkdownOffIcon className="w-4.75 h-4.75 stroke-[1.4]" />
                 ) : (
@@ -2473,13 +2781,17 @@ export function Editor({
           <EditorWidthHandles containerRef={scrollContainerRef} />
         )}
         <div className="absolute inset-0 flex">
-          {showDocumentMode && documentDetail && notesCtx?.selectNote && notesCtx?.refreshNotes && (
+          {showDocumentMode && documentDetail && notesCtx && (
             <DocumentPagesSidebar
               document={documentDetail}
               currentNoteId={currentNote.id}
-              onSelectPage={notesCtx.selectNote}
+              mode={documentEditMode}
+              onModeChange={handleSwitchDocumentMode}
+              onSelectPage={handleSelectDocumentPage}
               onDocumentChange={setDocumentDetail}
               onRefreshNotes={notesCtx.refreshNotes}
+              onNormalizeDocument={handleNormalizeDocument}
+              isDocumentBusy={isDocumentOperationBusy}
             />
           )}
           <div
@@ -2542,7 +2854,9 @@ export function Editor({
                 className={cn(
                   "h-full",
                   showDocumentMode && "markch-document-editor",
-                  currentDocumentPage?.overflow && "markch-document-overflow",
+                  documentEditMode !== "all" &&
+                    currentDocumentPage?.overflow &&
+                    "markch-document-overflow",
                 )}
                 style={
                   showDocumentMode

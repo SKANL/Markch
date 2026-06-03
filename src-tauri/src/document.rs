@@ -61,6 +61,7 @@ pub enum MoveDirection {
 
 #[derive(Debug, Clone)]
 enum BlockKind {
+    Heading,
     Paragraph,
     Atomic,
 }
@@ -70,6 +71,12 @@ struct MarkdownBlock {
     text: String,
     words: usize,
     kind: BlockKind,
+}
+
+#[derive(Debug, Clone)]
+struct PageDraft {
+    title: String,
+    content: String,
 }
 
 fn now_string() -> String {
@@ -162,7 +169,11 @@ fn page_file_name(index: usize, title: &str) -> String {
     format!("{:03}-{}.md", index, sanitized)
 }
 
-fn ensure_unique_folder(notes_root: &Path, parent: Option<&str>, title: &str) -> Result<String, String> {
+fn ensure_unique_folder(
+    notes_root: &Path,
+    parent: Option<&str>,
+    title: &str,
+) -> Result<String, String> {
     let base_name = crate::sanitize_filename(title);
     let parent = parent.map(normalize_rel_path).filter(|p| !p.is_empty());
     if let Some(ref parent_path) = parent {
@@ -291,7 +302,10 @@ pub fn create_document(
     read_document(notes_root, &document_path, 800)
 }
 
-pub fn list_documents(notes_root: &Path, ignored_dirs: &[String]) -> Result<Vec<DocumentMetadata>, String> {
+pub fn list_documents(
+    notes_root: &Path,
+    ignored_dirs: &[String],
+) -> Result<Vec<DocumentMetadata>, String> {
     let mut documents = Vec::new();
     for entry in walkdir::WalkDir::new(notes_root)
         .max_depth(10)
@@ -320,7 +334,11 @@ pub fn list_documents(notes_root: &Path, ignored_dirs: &[String]) -> Result<Vec<
     Ok(documents)
 }
 
-pub fn read_document(notes_root: &Path, document_path: &str, word_limit: usize) -> Result<DocumentDetail, String> {
+pub fn read_document(
+    notes_root: &Path,
+    document_path: &str,
+    word_limit: usize,
+) -> Result<DocumentDetail, String> {
     let dir = document_dir(notes_root, document_path)?;
     let manifest = read_manifest(&dir)?;
     let mut pages = Vec::new();
@@ -360,6 +378,15 @@ pub fn read_document_markdown(notes_root: &Path, document_path: &str) -> Result<
         markdown.push_str(&content);
     }
     Ok(markdown)
+}
+
+pub fn save_document_markdown(
+    notes_root: &Path,
+    document_path: &str,
+    markdown: &str,
+    word_limit: usize,
+) -> Result<DocumentDetail, String> {
+    write_paginated_document(notes_root, document_path, markdown, word_limit)
 }
 
 pub fn read_document_for_note(
@@ -410,7 +437,11 @@ pub fn rename_document_page(
     validate_page_file(page_file)?;
     let dir = document_dir(notes_root, document_path)?;
     let mut manifest = read_manifest(&dir)?;
-    let Some(index) = manifest.pages.iter().position(|page| page.file == page_file) else {
+    let Some(index) = manifest
+        .pages
+        .iter()
+        .position(|page| page.file == page_file)
+    else {
         return Err("Page not found".to_string());
     };
     let clean_title = if title.trim().is_empty() {
@@ -440,7 +471,11 @@ pub fn delete_document_page(
     if manifest.pages.len() <= 1 {
         return Err("A Document must keep at least one page".to_string());
     }
-    let Some(index) = manifest.pages.iter().position(|page| page.file == page_file) else {
+    let Some(index) = manifest
+        .pages
+        .iter()
+        .position(|page| page.file == page_file)
+    else {
         return Err("Page not found".to_string());
     };
     let removed = manifest.pages.remove(index);
@@ -460,7 +495,11 @@ pub fn move_document_page(
     validate_page_file(page_file)?;
     let dir = document_dir(notes_root, document_path)?;
     let mut manifest = read_manifest(&dir)?;
-    let Some(index) = manifest.pages.iter().position(|page| page.file == page_file) else {
+    let Some(index) = manifest
+        .pages
+        .iter()
+        .position(|page| page.file == page_file)
+    else {
         return Err("Page not found".to_string());
     };
     let target_index = match direction {
@@ -512,70 +551,176 @@ pub fn normalize_document(
     document_path: &str,
     word_limit: usize,
 ) -> Result<DocumentDetail, String> {
+    let markdown = read_document_markdown(notes_root, document_path)?;
+    write_paginated_document(notes_root, document_path, &markdown, word_limit)
+}
+
+fn write_paginated_document(
+    notes_root: &Path,
+    document_path: &str,
+    markdown: &str,
+    word_limit: usize,
+) -> Result<DocumentDetail, String> {
     let word_limit = word_limit.clamp(250, 2000);
     let dir = document_dir(notes_root, document_path)?;
-    let mut manifest = read_manifest(&dir)?;
-    let mut carry: Vec<MarkdownBlock> = Vec::new();
-    let mut index = 0;
-
-    while index < manifest.pages.len() || !carry.is_empty() {
-        if index >= manifest.pages.len() {
-            let title = format!("Page {}", index + 1);
-            let file = page_file_name(index + 1, &title);
-            fs::write(dir.join(&file), format!("# {}\n\n", title)).map_err(|e| e.to_string())?;
-            manifest.pages.push(DocumentPageManifest { file, title });
-        }
-
-        let page = manifest.pages[index].clone();
-        let file_path = dir.join(&page.file);
-        let original = fs::read_to_string(&file_path).unwrap_or_else(|_| format!("# {}\n\n", page.title));
-        let (heading, body) = split_heading(&original, &page.title);
-        let mut blocks = Vec::new();
-        blocks.append(&mut carry);
-        blocks.extend(split_markdown_blocks(&body));
-        let (kept, overflow) = split_blocks_for_limit(blocks, word_limit);
-        let next_content = compose_page(&heading, &kept);
-        fs::write(&file_path, next_content).map_err(|e| e.to_string())?;
-        carry = overflow;
-        index += 1;
+    let manifest = read_manifest(&dir)?;
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    );
+    let old_files = manifest
+        .pages
+        .iter()
+        .map(|page| page.file.clone())
+        .collect::<Vec<_>>();
+    for file in &old_files {
+        validate_page_file(file)?;
     }
 
-    manifest.updated_at = now_string();
-    write_manifest(&dir, &manifest)?;
+    let drafts = paginate_markdown(markdown, word_limit);
+    let next_pages = drafts
+        .iter()
+        .enumerate()
+        .map(|(idx, draft)| {
+            let file = page_file_name(idx + 1, &draft.title);
+            Ok(DocumentPageManifest {
+                file,
+                title: draft.title.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let old_file_set = old_files
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    for page in &next_pages {
+        let final_path = dir.join(&page.file);
+        if final_path.exists() && !old_file_set.contains(&page.file) {
+            return Err(format!("Document page file already exists: {}", page.file));
+        }
+    }
+
+    let mut temp_pages = Vec::new();
+    for (idx, draft) in drafts.iter().enumerate() {
+        let temp_file = format!(".markch-write-{}-{:03}.md.tmp", nonce, idx + 1);
+        if let Err(error) = fs::write(dir.join(&temp_file), &draft.content) {
+            cleanup_temp_files(&dir, &temp_pages, None);
+            return Err(error.to_string());
+        }
+        temp_pages.push(temp_file);
+    }
+
+    let temp_manifest_file = format!("{}.write-{}.tmp", MANIFEST_FILE, nonce);
+    let mut next_manifest = manifest.clone();
+    next_manifest.pages = next_pages;
+    next_manifest.updated_at = now_string();
+    let temp_manifest_path = dir.join(&temp_manifest_file);
+    let temp_manifest = serde_json::to_string_pretty(&next_manifest).map_err(|e| e.to_string())?;
+    fs::write(&temp_manifest_path, temp_manifest).map_err(|e| {
+        cleanup_temp_files(&dir, &temp_pages, Some(&temp_manifest_file));
+        e.to_string()
+    })?;
+
+    let result = publish_paginated_document(&dir, &manifest, &next_manifest, &temp_pages, &nonce);
+    if result.is_err() {
+        cleanup_temp_files(&dir, &temp_pages, Some(&temp_manifest_file));
+    }
+    result?;
     read_document(notes_root, document_path, word_limit)
 }
 
-fn split_heading(content: &str, fallback_title: &str) -> (String, String) {
-    let mut lines = content.lines();
-    if let Some(first) = lines.next() {
-        if first.trim_start().starts_with("# ") {
-            return (first.trim().to_string(), lines.collect::<Vec<_>>().join("\n"));
+fn publish_paginated_document(
+    dir: &Path,
+    old_manifest: &DocumentManifest,
+    next_manifest: &DocumentManifest,
+    temp_pages: &[String],
+    nonce: &str,
+) -> Result<(), String> {
+    let mut page_backups: Vec<(String, String)> = Vec::new();
+    let manifest_backup = format!("{}.backup-{}.tmp", MANIFEST_FILE, nonce);
+
+    for page in &old_manifest.pages {
+        validate_page_file(&page.file)?;
+        let path = dir.join(&page.file);
+        if !path.exists() {
+            continue;
         }
+        let backup = format!(".markch-old-{}-{}", nonce, page.file);
+        fs::rename(&path, dir.join(&backup)).map_err(|e| e.to_string())?;
+        page_backups.push((page.file.clone(), backup));
     }
-    (format!("# {}", fallback_title), content.to_string())
+
+    let publish_result = (|| -> Result<(), String> {
+        for (page, temp_file) in next_manifest.pages.iter().zip(temp_pages.iter()) {
+            validate_page_file(&page.file)?;
+            fs::rename(dir.join(temp_file), dir.join(&page.file)).map_err(|e| e.to_string())?;
+        }
+        fs::rename(manifest_path(dir), dir.join(&manifest_backup)).map_err(|e| e.to_string())?;
+        fs::rename(
+            dir.join(format!("{}.write-{}.tmp", MANIFEST_FILE, nonce)),
+            manifest_path(dir),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+
+    if let Err(error) = publish_result {
+        rollback_paginated_document(dir, &page_backups, next_manifest, &manifest_backup);
+        return Err(error);
+    }
+
+    for (_, backup) in page_backups {
+        let _ = fs::remove_file(dir.join(backup));
+    }
+    let _ = fs::remove_file(dir.join(manifest_backup));
+    Ok(())
 }
 
-fn compose_page(heading: &str, blocks: &[MarkdownBlock]) -> String {
-    let body = blocks
-        .iter()
-        .map(|block| block.text.trim().to_string())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if body.is_empty() {
-        format!("{}\n\n", heading)
-    } else {
-        format!("{}\n\n{}\n", heading, body)
+fn rollback_paginated_document(
+    dir: &Path,
+    page_backups: &[(String, String)],
+    next_manifest: &DocumentManifest,
+    manifest_backup: &str,
+) {
+    for page in &next_manifest.pages {
+        let _ = fs::remove_file(dir.join(&page.file));
+    }
+    if dir.join(manifest_backup).exists() {
+        let _ = fs::remove_file(manifest_path(dir));
+        let _ = fs::rename(dir.join(manifest_backup), manifest_path(dir));
+    }
+    for (original, backup) in page_backups.iter().rev() {
+        if dir.join(backup).exists() {
+            let _ = fs::rename(dir.join(backup), dir.join(original));
+        }
+    }
+}
+
+fn cleanup_temp_files(dir: &Path, temp_pages: &[String], temp_manifest: Option<&str>) {
+    for temp in temp_pages {
+        let _ = fs::remove_file(dir.join(temp));
+    }
+    if let Some(temp_manifest) = temp_manifest {
+        let _ = fs::remove_file(dir.join(temp_manifest));
     }
 }
 
 fn count_words(text: &str) -> usize {
-    text.split_whitespace().filter(|word| word.chars().any(char::is_alphanumeric)).count()
+    text.split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphanumeric))
+        .count()
 }
 
 fn classify_block(text: &str) -> BlockKind {
     let trimmed = text.trim_start();
-    if trimmed.starts_with("```")
+    if heading_title(trimmed).is_some() {
+        BlockKind::Heading
+    } else if trimmed.starts_with("```")
         || trimmed.starts_with('|')
         || trimmed.starts_with("![")
         || trimmed.starts_with("- ")
@@ -610,7 +755,11 @@ fn split_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
             continue;
         }
 
-        if trimmed.is_empty() {
+        if heading_title(trimmed).is_some() {
+            push_block(&mut blocks, &mut current);
+            current.push(line.to_string());
+            push_block(&mut blocks, &mut current);
+        } else if trimmed.is_empty() {
             push_block(&mut blocks, &mut current);
         } else {
             current.push(line.to_string());
@@ -618,6 +767,104 @@ fn split_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
     }
     push_block(&mut blocks, &mut current);
     blocks
+}
+
+fn paginate_markdown(markdown: &str, limit: usize) -> Vec<PageDraft> {
+    let mut blocks = split_markdown_blocks(markdown);
+    if blocks.is_empty() {
+        blocks.push(MarkdownBlock {
+            text: "# Page 1".to_string(),
+            words: 2,
+            kind: BlockKind::Heading,
+        });
+    }
+
+    let mut pages = Vec::new();
+    let mut current = Vec::new();
+    let mut count = 0usize;
+    let heading_break_threshold = (limit / 2).max(1);
+
+    for block in blocks {
+        let should_break_for_limit =
+            !current.is_empty() && count + block.words > limit && !has_only_heading(&current);
+        let should_break_for_heading = matches!(block.kind, BlockKind::Heading)
+            && !current.is_empty()
+            && count >= heading_break_threshold;
+
+        if should_break_for_limit || should_break_for_heading {
+            pages.push(compose_page_draft(pages.len() + 1, &current));
+            current.clear();
+            count = 0;
+        }
+
+        count += block.words;
+        current.push(block);
+    }
+
+    if !current.is_empty() {
+        pages.push(compose_page_draft(pages.len() + 1, &current));
+    }
+
+    if pages.is_empty() {
+        vec![PageDraft {
+            title: "Page 1".to_string(),
+            content: "# Page 1\n\n".to_string(),
+        }]
+    } else {
+        pages
+    }
+}
+
+fn has_only_heading(blocks: &[MarkdownBlock]) -> bool {
+    blocks.len() == 1 && matches!(blocks[0].kind, BlockKind::Heading)
+}
+
+fn compose_page_draft(index: usize, blocks: &[MarkdownBlock]) -> PageDraft {
+    let title = blocks
+        .iter()
+        .find_map(|block| heading_title(&block.text))
+        .unwrap_or_else(|| format!("Page {}", index));
+    let mut content = blocks
+        .iter()
+        .map(|block| block.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if !blocks
+        .iter()
+        .any(|block| matches!(block.kind, BlockKind::Heading))
+    {
+        content = if content.is_empty() {
+            format!("# {}", title)
+        } else {
+            format!("# {}\n\n{}", title, content)
+        };
+    }
+
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+
+    PageDraft { title, content }
+}
+
+fn heading_title(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let rest = trimmed.get(hashes..)?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let title = rest.trim().trim_end_matches('#').trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
 }
 
 fn push_block(blocks: &mut Vec<MarkdownBlock>, current: &mut Vec<String>) {
@@ -629,62 +876,6 @@ fn push_block(blocks: &mut Vec<MarkdownBlock>, current: &mut Vec<String>) {
     let words = count_words(&text);
     let kind = classify_block(&text);
     blocks.push(MarkdownBlock { text, words, kind });
-}
-
-fn split_blocks_for_limit(
-    blocks: Vec<MarkdownBlock>,
-    limit: usize,
-) -> (Vec<MarkdownBlock>, Vec<MarkdownBlock>) {
-    let mut kept = Vec::new();
-    let mut overflow = Vec::new();
-    let mut count = 0usize;
-    let mut overflowing = false;
-
-    for block in blocks {
-        if overflowing {
-            overflow.push(block);
-            continue;
-        }
-
-        if count + block.words <= limit || kept.is_empty() {
-            if kept.is_empty() && block.words > limit && matches!(block.kind, BlockKind::Paragraph) {
-                let (head, tail) = split_paragraph_block(block, limit);
-                count += head.words;
-                kept.push(head);
-                overflow.extend(tail);
-                overflowing = true;
-            } else {
-                count += block.words;
-                kept.push(block);
-            }
-        } else {
-            overflow.push(block);
-            overflowing = true;
-        }
-    }
-
-    (kept, overflow)
-}
-
-fn split_paragraph_block(block: MarkdownBlock, limit: usize) -> (MarkdownBlock, Vec<MarkdownBlock>) {
-    let words = block.text.split_whitespace().collect::<Vec<_>>();
-    let head_words = words.iter().take(limit).copied().collect::<Vec<_>>().join(" ");
-    let tail_words = words.iter().skip(limit).copied().collect::<Vec<_>>().join(" ");
-    let head = MarkdownBlock {
-        words: count_words(&head_words),
-        text: head_words,
-        kind: BlockKind::Paragraph,
-    };
-    let tail = if tail_words.is_empty() {
-        Vec::new()
-    } else {
-        vec![MarkdownBlock {
-            words: count_words(&tail_words),
-            text: tail_words,
-            kind: BlockKind::Paragraph,
-        }]
-    };
-    (head, tail)
 }
 
 #[cfg(test)]
@@ -777,8 +968,14 @@ mod tests {
         let root = temp_root("paginate");
         create_document(&root, None, "Doc".to_string()).unwrap();
         let page = root.join("Doc").join("001-Page 1.md");
-        let first_words = (0..240).map(|i| format!("alpha{}", i)).collect::<Vec<_>>().join(" ");
-        let second_words = (0..80).map(|i| format!("zeta{}", i)).collect::<Vec<_>>().join(" ");
+        let first_words = (0..240)
+            .map(|i| format!("alpha{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let second_words = (0..80)
+            .map(|i| format!("zeta{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
         fs::write(
             &page,
             format!("# Page 1\n\n{}\n\n{}\n", first_words, second_words),
@@ -793,11 +990,165 @@ mod tests {
     }
 
     #[test]
+    fn header_can_start_a_new_page_near_limit() {
+        let root = temp_root("header-break");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let page = root.join("Doc").join("001-Page 1.md");
+        let intro = (0..140)
+            .map(|i| format!("intro{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(
+            &page,
+            format!("# Intro\n\n{}\n\n## Next Section\n\nshort body\n", intro),
+        )
+        .unwrap();
+
+        let detail = normalize_document(&root, "Doc", 250).unwrap();
+
+        assert_eq!(detail.pages.len(), 2);
+        assert_eq!(detail.pages[1].title, "Next Section");
+        let second = fs::read_to_string(root.join("Doc").join(&detail.pages[1].file)).unwrap();
+        assert!(second.starts_with("## Next Section"));
+    }
+
+    #[test]
+    fn page_title_comes_from_first_visible_header() {
+        let root = temp_root("header-title");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let page = root.join("Doc").join("001-Page 1.md");
+        fs::write(&page, "## Section Title\n\nbody\n").unwrap();
+
+        let detail = normalize_document(&root, "Doc", 250).unwrap();
+
+        assert_eq!(detail.pages[0].title, "Section Title");
+        assert_eq!(detail.pages[0].file, "001-Section Title.md");
+    }
+
+    #[test]
+    fn does_not_split_long_paragraph_mid_text() {
+        let root = temp_root("long-paragraph");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let page = root.join("Doc").join("001-Page 1.md");
+        let paragraph = (0..300)
+            .map(|i| format!("word{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(&page, format!("# Long\n\n{}\n", paragraph)).unwrap();
+
+        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let first = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
+
+        assert_eq!(detail.pages.len(), 1);
+        assert!(detail.pages[0].overflow);
+        assert!(first.contains("word0"));
+        assert!(first.contains("word299"));
+    }
+
+    #[test]
+    fn long_section_splits_by_blocks_without_losing_header() {
+        let root = temp_root("long-section");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let page = root.join("Doc").join("001-Page 1.md");
+        let first = (0..180)
+            .map(|i| format!("first{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let second = (0..120)
+            .map(|i| format!("second{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(&page, format!("# Alpha\n\n{}\n\n{}\n", first, second)).unwrap();
+
+        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let first_page = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
+        let second_page = fs::read_to_string(root.join("Doc").join(&detail.pages[1].file)).unwrap();
+
+        assert!(first_page.starts_with("# Alpha"));
+        assert!(first_page.contains("first0"));
+        assert!(second_page.contains("second0"));
+    }
+
+    #[test]
+    fn save_document_markdown_creates_renumbered_pages() {
+        let root = temp_root("save-markdown");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let body = (0..150)
+            .map(|i| format!("word{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let detail = save_document_markdown(
+            &root,
+            "Doc",
+            &format!("# First\n\n{}\n\n## Second\n\nbody\n", body),
+            250,
+        )
+        .unwrap();
+
+        assert_eq!(detail.pages.len(), 2);
+        assert_eq!(detail.pages[0].file, "001-First.md");
+        assert_eq!(detail.pages[1].file, "002-Second.md");
+    }
+
+    #[test]
+    fn save_document_markdown_leaves_no_temp_files_after_success() {
+        let root = temp_root("save-clean-temp");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+
+        save_document_markdown(&root, "Doc", "# First\n\nbody\n", 250).unwrap();
+
+        let files = fs::read_dir(root.join("Doc"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(!files.iter().any(|file| file.contains(".markch-write-")));
+        assert!(!files.iter().any(|file| file.contains(".markch-old-")));
+        assert!(!files.iter().any(|file| file.contains(".backup-")));
+    }
+
+    #[test]
+    fn save_document_markdown_preserves_old_pages_on_conflicting_output() {
+        let root = temp_root("save-conflict");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let original_path = root.join("Doc").join("001-Page 1.md");
+        fs::write(&original_path, "# Page 1\n\noriginal\n").unwrap();
+        fs::write(root.join("Doc").join("002-Second.md"), "# Existing\n").unwrap();
+        let body = (0..150)
+            .map(|i| format!("word{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let result = save_document_markdown(
+            &root,
+            "Doc",
+            &format!("# First\n\n{}\n\n## Second\n\nbody\n", body),
+            250,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(original_path).unwrap(),
+            "# Page 1\n\noriginal\n"
+        );
+    }
+
+    #[test]
+    fn save_document_markdown_rejects_escaping_paths() {
+        let root = temp_root("save-escape");
+        let result = save_document_markdown(&root, "../outside", "# Nope\n", 250);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn keeps_atomic_block_when_it_exceeds_limit() {
         let root = temp_root("atomic");
         create_document(&root, None, "Doc".to_string()).unwrap();
         let page = root.join("Doc").join("001-Page 1.md");
-        let code_words = (0..260).map(|i| format!("word{}", i)).collect::<Vec<_>>().join(" ");
+        let code_words = (0..260)
+            .map(|i| format!("word{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
         fs::write(
             &page,
             format!("# Page 1\n\n```txt\n{}\n```\n\nnext block\n", code_words),

@@ -78,6 +78,13 @@ export async function readDocumentMarkdown(documentPath: string): Promise<string
   return invoke("read_document_markdown", { documentPath });
 }
 
+export async function saveDocumentMarkdown(
+  documentPath: string,
+  markdown: string,
+): Promise<DocumentDetail> {
+  return invoke("save_document_markdown", { documentPath, markdown });
+}
+
 export async function readDocumentForNote(
   noteId: string,
 ): Promise<DocumentDetail | null> {
@@ -121,6 +128,12 @@ export async function normalizeDocumentForNote(
   noteId: string,
 ): Promise<DocumentDetail | null> {
   return invoke("normalize_document_for_note", { noteId });
+}
+
+export async function normalizeDocument(
+  documentPath: string,
+): Promise<DocumentDetail> {
+  return invoke("normalize_document", { documentPath });
 }
 
 export async function duplicateNote(id: string): Promise<Note> {

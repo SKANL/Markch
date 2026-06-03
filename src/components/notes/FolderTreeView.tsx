@@ -35,6 +35,7 @@ import {
   ArrowUpIcon,
   DownloadIcon,
   FolderIcon,
+  RefreshCwIcon,
 } from "../icons";
 import * as notesService from "../../services/notes";
 import { downloadMarkdown } from "../../services/pdf";
@@ -294,7 +295,7 @@ const DocumentItem = memo(function DocumentItem({
   onOpenDocument,
 }: DocumentItemProps) {
   const isFocused = focusedItemKey === `document:${document.path}`;
-  const { selectNote, refreshNotes } = useNotes();
+  const { selectedNoteId, selectNote, refreshNotes } = useNotes();
 
   const handleCreatePage = useCallback(async () => {
     try {
@@ -333,6 +334,27 @@ const DocumentItem = memo(function DocumentItem({
       toast.error("Failed to export full Document");
     }
   }, [document.path, document.title]);
+
+  const handleNormalizeDocument = useCallback(async () => {
+    try {
+      if (selectedNoteId?.startsWith(`${document.path}/`)) {
+        window.dispatchEvent(
+          new CustomEvent("normalize-document", { detail: document.path }),
+        );
+        return;
+      }
+      const next = await notesService.normalizeDocument(document.path);
+      await refreshNotes();
+      toast.success(
+        `Document normalized: ${next.pages.length} ${
+          next.pages.length === 1 ? "page" : "pages"
+        }`,
+      );
+    } catch (error) {
+      console.error("Failed to normalize Document:", error);
+      toast.error("Failed to normalize Document");
+    }
+  }, [document.path, refreshNotes, selectedNoteId]);
 
   const handleCopyFolderPath = useCallback(async () => {
     try {
@@ -410,6 +432,13 @@ const DocumentItem = memo(function DocumentItem({
           >
             <DownloadIcon className="w-4 h-4 stroke-[1.6]" />
             Export Full Document Markdown
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleNormalizeDocument}
+          >
+            <RefreshCwIcon className="w-4 h-4 stroke-[1.6]" />
+            Normalize Document
           </ContextMenu.Item>
           <ContextMenu.Separator className={menuSeparatorClass} />
           <ContextMenu.Item
