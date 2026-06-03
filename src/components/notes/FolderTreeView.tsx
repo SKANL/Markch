@@ -35,7 +35,12 @@ import {
   ArrowUpIcon,
 } from "../icons";
 import * as notesService from "../../services/notes";
-import type { FolderNode, NoteMetadata, Settings } from "../../types/note";
+import type {
+  DocumentMetadata,
+  FolderNode,
+  NoteMetadata,
+  Settings,
+} from "../../types/note";
 
 const STORAGE_KEY = "markch:collapsedFolders";
 
@@ -267,7 +272,49 @@ interface FolderItemProps {
   onDeleteNote: (id: string) => void;
   onMoveNoteToParent: (id: string, targetFolder: string) => void;
   onMoveFolderToParent: (path: string, targetParent: string) => void;
+  onOpenDocument: (documentPath: string) => void;
 }
+
+interface DocumentItemProps {
+  document: DocumentMetadata;
+  depth: number;
+  isSelected: boolean;
+  focusedItemKey: string | null;
+  onOpenDocument: (documentPath: string) => void;
+}
+
+const DocumentItem = memo(function DocumentItem({
+  document,
+  depth,
+  isSelected,
+  focusedItemKey,
+  onOpenDocument,
+}: DocumentItemProps) {
+  const isFocused = focusedItemKey === `document:${document.path}`;
+
+  return (
+    <div
+      className={`flex items-center gap-1.5 py-1.5 cursor-pointer rounded-md select-none transition-colors ${
+        isSelected
+          ? "bg-bg-muted group-focus/notelist:ring-1 group-focus/notelist:ring-text-muted"
+          : isFocused
+            ? "bg-bg-muted/50 ring-1 ring-text-muted/30"
+            : "hover:bg-bg-muted"
+      }`}
+      style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
+      onClick={() => onOpenDocument(document.path)}
+      role="button"
+      tabIndex={-1}
+      title={`${document.title} Document`}
+    >
+      <NoteIcon className="w-4 h-4 stroke-[1.6] opacity-70 shrink-0" />
+      <span className="text-sm text-text truncate">{cleanTitle(document.title)}</span>
+      <span className="ml-auto text-[10px] text-text-muted shrink-0">
+        {document.pageCount}
+      </span>
+    </div>
+  );
+});
 
 const FolderItemComponent = memo(function FolderItem({
   folder,
@@ -289,6 +336,7 @@ const FolderItemComponent = memo(function FolderItem({
   onDeleteNote,
   onMoveNoteToParent,
   onMoveFolderToParent,
+  onOpenDocument,
 }: FolderItemProps) {
   const isCollapsed = collapsedFolders.has(folder.path);
   const noteCount = countNotesInFolder(folder);
@@ -371,6 +419,19 @@ const FolderItemComponent = memo(function FolderItem({
                   onDeleteNote={onDeleteNote}
                   onMoveNoteToParent={onMoveNoteToParent}
                   onMoveFolderToParent={onMoveFolderToParent}
+                  onOpenDocument={onOpenDocument}
+                />
+              ))}
+              {folder.documents.map((document) => (
+                <DocumentItem
+                  key={document.path}
+                  document={document}
+                  depth={depth + 1}
+                  isSelected={
+                    selectedNoteId?.startsWith(`${document.path}/`) ?? false
+                  }
+                  focusedItemKey={focusedItemKey}
+                  onOpenDocument={onOpenDocument}
                 />
               ))}
               {folder.notes.map((note) => (
@@ -476,6 +537,7 @@ const FolderItemComponent = memo(function FolderItem({
 interface FolderTreeViewProps {
   pinnedIds: Set<string>;
   settings: Settings | null;
+  documents: DocumentMetadata[];
   multiSelectedNoteIds: Set<string>;
   setMultiSelectedNoteIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   lastClickedNoteId: string | null;
@@ -485,6 +547,7 @@ interface FolderTreeViewProps {
 export function FolderTreeView({
   pinnedIds,
   settings: _settings,
+  documents,
   multiSelectedNoteIds,
   setMultiSelectedNoteIds,
   lastClickedNoteId,
@@ -535,8 +598,26 @@ export function FolderTreeView({
   }, [collapsedFolders]);
 
   const tree = useMemo(
-    () => buildFolderTree(notes, pinnedIds, knownFolders),
-    [notes, pinnedIds, knownFolders],
+    () => buildFolderTree(notes, pinnedIds, knownFolders, documents),
+    [notes, pinnedIds, knownFolders, documents],
+  );
+
+  const handleOpenDocument = useCallback(
+    async (documentPath: string) => {
+      try {
+        const detail = await notesService.readDocument(documentPath);
+        const firstPage = detail.pages[0];
+        if (!firstPage) {
+          toast.error("Document has no pages");
+          return;
+        }
+        selectNote(firstPage.id);
+      } catch (error) {
+        console.error("Failed to open Document:", error);
+        toast.error("Failed to open Document");
+      }
+    },
+    [selectNote],
   );
 
   const handleToggleCollapse = useCallback((path: string) => {
@@ -748,7 +829,11 @@ export function FolderTreeView({
   }, [selectedNoteId]);
 
   const itemKey = (item: TreeItem) =>
-    item.type === "note" ? `note:${item.id}` : `folder:${item.path}`;
+    item.type === "note"
+      ? `note:${item.id}`
+      : item.type === "document"
+        ? `document:${item.path}`
+        : `folder:${item.path}`;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -794,12 +879,16 @@ export function FolderTreeView({
         setFocusedItemKey(itemKey(item));
         if (item.type === "note") {
           selectNote(item.id);
+        } else if (item.type === "document") {
+          handleOpenDocument(item.path);
         }
       } else if (e.key === "Enter") {
         if (currentIndex < 0) return;
         const item = visibleItems[currentIndex];
         if (item.type === "folder") {
           handleToggleCollapse(item.path);
+        } else if (item.type === "document") {
+          handleOpenDocument(item.path);
         } else {
           // Focus the editor
           const editor = document.querySelector(".ProseMirror") as HTMLElement;
@@ -812,6 +901,7 @@ export function FolderTreeView({
       focusedItemKey,
       selectNote,
       handleToggleCollapse,
+      handleOpenDocument,
       multiSelectedNoteIds,
       setMultiSelectedNoteIds,
       setLastClickedNoteId,
@@ -897,6 +987,19 @@ export function FolderTreeView({
             onDeleteNote={openDeleteNoteDialog}
             onMoveNoteToParent={moveNote}
             onMoveFolderToParent={moveFolder}
+            onOpenDocument={handleOpenDocument}
+          />
+        ))}
+
+        {/* Root Documents */}
+        {tree.rootDocuments.map((document) => (
+          <DocumentItem
+            key={document.path}
+            document={document}
+            depth={0}
+            isSelected={selectedNoteId?.startsWith(`${document.path}/`) ?? false}
+            focusedItemKey={focusedItemKey}
+            onOpenDocument={handleOpenDocument}
           />
         ))}
 

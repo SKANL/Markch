@@ -21,7 +21,7 @@ import {
   CopyIcon,
   TrashIcon,
 } from "../icons";
-import type { Settings } from "../../types/note";
+import type { DocumentMetadata, Settings } from "../../types/note";
 
 const menuItemClass =
   "px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2 rounded-sm";
@@ -255,16 +255,34 @@ export function NoteList({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Load settings when notes change
   useEffect(() => {
+    let active = true;
     notesService
       .getSettings()
-      .then(setSettings)
+      .then(async (nextSettings) => {
+        if (!active) return;
+        setSettings(nextSettings);
+        if (
+          nextSettings.foldersEnabled === true &&
+          nextSettings.documentsEnabled === true
+        ) {
+          const nextDocuments = await notesService.listDocuments();
+          if (active) setDocuments(nextDocuments);
+        } else if (active) {
+          setDocuments([]);
+        }
+      })
       .catch((error) => {
         console.error("Failed to load settings:", error);
+        if (active) setDocuments([]);
       });
+    return () => {
+      active = false;
+    };
   }, [notes]);
 
   // Calculate pinned IDs set for efficient lookup
@@ -364,6 +382,7 @@ export function NoteList({
         <FolderTreeView
           pinnedIds={pinnedIds}
           settings={settings}
+          documents={documents}
           multiSelectedNoteIds={multiSelectedNoteIds}
           setMultiSelectedNoteIds={setMultiSelectedNoteIds}
           lastClickedNoteId={lastClickedNoteId}

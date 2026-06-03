@@ -28,6 +28,7 @@ import {
 } from "@tauri-apps/plugin-updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as aiService from "./services/ai";
+import * as notesService from "./services/notes";
 import type { AiProvider } from "./services/ai";
 
 const UPDATES_ENABLED = true;
@@ -59,6 +60,7 @@ function AppContent() {
     selectNote,
     searchQuery,
     searchResults,
+    refreshNotes,
     reloadCurrentNote,
     currentNote,
     syncNotesFolder,
@@ -137,19 +139,30 @@ function AppContent() {
       setAiEditing(true);
 
       try {
+        const documentContext = await notesService.readDocumentForNote(
+          currentNote.id,
+        );
+        const aiPrompt = documentContext
+          ? `This markdown file is one page inside a Markch Document named "${documentContext.title}". Edit this page as complete markdown. Do not create, delete, rename, or modify other files; Markch will automatically paginate overflow into additional markdown pages after your edit.\n\nUser instructions:\n${prompt}`
+          : prompt;
         let result: aiService.AiExecutionResult;
         if (aiProvider === "codex") {
-          result = await aiService.executeCodexEdit(currentNote.path, prompt);
+          result = await aiService.executeCodexEdit(currentNote.path, aiPrompt);
         } else if (aiProvider === "opencode") {
-          result = await aiService.executeOpenCodeEdit(currentNote.path, prompt);
+          result = await aiService.executeOpenCodeEdit(currentNote.path, aiPrompt);
         } else if (aiProvider === "ollama") {
           result = await aiService.executeOllamaEdit(
             currentNote.path,
-            prompt,
+            aiPrompt,
             ollamaModel || "qwen3:8b",
           );
         } else {
-          result = await aiService.executeClaudeEdit(currentNote.path, prompt);
+          result = await aiService.executeClaudeEdit(currentNote.path, aiPrompt);
+        }
+
+        if (result.success && documentContext) {
+          await notesService.normalizeDocumentForNote(currentNote.id);
+          await refreshNotes();
         }
 
         // Reload the current note from disk
@@ -187,7 +200,7 @@ function AppContent() {
         setAiEditing(false);
       }
     },
-    [aiProvider, currentNote, reloadCurrentNote],
+    [aiProvider, currentNote, refreshNotes, reloadCurrentNote],
   );
 
   // Memoize display items to prevent unnecessary recalculations

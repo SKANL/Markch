@@ -13,6 +13,29 @@ export interface Note {
   modified: number;
 }
 
+export interface DocumentMetadata {
+  path: string;
+  title: string;
+  pageCount: number;
+  modified: number;
+}
+
+export interface DocumentPage {
+  id: string;
+  file: string;
+  title: string;
+  modified: number;
+  index: number;
+  wordCount: number;
+  overflow: boolean;
+}
+
+export interface DocumentDetail {
+  path: string;
+  title: string;
+  pages: DocumentPage[];
+}
+
 export interface ThemeSettings {
   mode: "light" | "dark" | "system";
 }
@@ -49,6 +72,9 @@ export interface Settings {
   editorFont?: EditorFontSettings;
   gitEnabled?: boolean;
   foldersEnabled?: boolean;
+  documentsEnabled?: boolean;
+  documentPageWordLimit?: number;
+  documentPageZoom?: number;
   pinnedNoteIds?: string[];
   textDirection?: TextDirection;
   editorWidth?: EditorWidth;
@@ -66,4 +92,5 @@ export interface FolderNode {
   path: string;
   children: FolderNode[];
   notes: NoteMetadata[];
+  documents: DocumentMetadata[];
 }

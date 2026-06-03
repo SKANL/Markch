@@ -4,6 +4,7 @@ import {
   useRef,
   useCallback,
   useState,
+  type CSSProperties,
 } from "react";
 import {
   useEditor,
@@ -61,6 +62,7 @@ import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { useOptionalNotes } from "../../context/NotesContext";
 import { useTheme } from "../../context/ThemeContext";
 import { Frontmatter } from "./Frontmatter";
+import { DocumentPagesSidebar } from "./DocumentPagesSidebar";
 import { BlockMathEditor } from "./BlockMathEditor";
 import { LinkEditor } from "./LinkEditor";
 import { SearchToolbar } from "./SearchToolbar";
@@ -74,7 +76,7 @@ import { plainTextFromMarkdown } from "../../lib/plainText";
 import { Button, IconButton, ToolbarButton, Tooltip } from "../ui";
 import * as notesService from "../../services/notes";
 import { downloadPdf, downloadMarkdown } from "../../services/pdf";
-import type { Settings } from "../../types/note";
+import type { DocumentDetail, Settings } from "../../types/note";
 import {
   BoldIcon,
   ItalicIcon,
@@ -552,6 +554,9 @@ export function Editor({
   const [, setSelectionKey] = useState(0);
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [documentDetail, setDocumentDetail] = useState<DocumentDetail | null>(
+    null,
+  );
   // Delay transition classes until after initial mount to avoid format bar height animation on note load
   const [hasTransitioned, setHasTransitioned] = useState(false);
   useEffect(() => {
@@ -624,9 +629,38 @@ export function Editor({
         .then(setSettings)
         .catch((error) => {
           console.error("Failed to load settings:", error);
-        });
+      });
     }
   }, [currentNote?.id, notes, previewMode]);
+
+  useEffect(() => {
+    let active = true;
+    if (!currentNote?.id || previewMode || settings?.documentsEnabled !== true) {
+      setDocumentDetail(null);
+      return;
+    }
+
+    notesService
+      .readDocumentForNote(currentNote.id)
+      .then((detail) => {
+        if (active) setDocumentDetail(detail);
+      })
+      .catch((error) => {
+        console.error("Failed to load document:", error);
+        if (active) setDocumentDetail(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    currentNote?.id,
+    currentNote?.modified,
+    notes,
+    previewMode,
+    settings?.documentsEnabled,
+    settings?.documentPageWordLimit,
+  ]);
 
   // Calculate if current note is pinned
   const isPinned =
@@ -2157,6 +2191,21 @@ export function Editor({
     );
   }
 
+  const showDocumentMode =
+    !sourceMode &&
+    !previewMode &&
+    settings?.documentsEnabled === true &&
+    documentDetail !== null &&
+    !!notesCtx?.selectNote &&
+    !!notesCtx?.refreshNotes;
+  const documentPageZoom = Math.min(
+    1.5,
+    Math.max(0.5, settings?.documentPageZoom ?? 1),
+  );
+  const currentDocumentPage = documentDetail?.pages.find(
+    (page) => page.id === currentNote.id,
+  );
+
   return (
     <div className="flex-1 flex flex-col bg-bg overflow-hidden">
       {/* Drag region with sidebar toggle, date and save status */}
@@ -2375,12 +2424,22 @@ export function Editor({
         {!focusMode && !sourceMode && (
           <EditorWidthHandles containerRef={scrollContainerRef} />
         )}
-        <div
-          data-editor-scroll
-          ref={scrollContainerRef}
-          className="absolute inset-0 overflow-y-auto overflow-x-hidden"
-          dir={textDirection}
-        >
+        <div className="absolute inset-0 flex">
+          {showDocumentMode && documentDetail && notesCtx?.selectNote && notesCtx?.refreshNotes && (
+            <DocumentPagesSidebar
+              document={documentDetail}
+              currentNoteId={currentNote.id}
+              onSelectPage={notesCtx.selectNote}
+              onDocumentChange={setDocumentDetail}
+              onRefreshNotes={notesCtx.refreshNotes}
+            />
+          )}
+          <div
+            data-editor-scroll
+            ref={scrollContainerRef}
+            className="relative min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
+            dir={textDirection}
+          >
           {sourceMode ? (
             /* Markdown source textarea */
             <div className="h-full">
@@ -2432,7 +2491,18 @@ export function Editor({
                 </div>
               )}
               <div
-                className="h-full"
+                className={cn(
+                  "h-full",
+                  showDocumentMode && "markch-document-editor",
+                  currentDocumentPage?.overflow && "markch-document-overflow",
+                )}
+                style={
+                  showDocumentMode
+                    ? ({
+                        "--document-page-zoom": documentPageZoom,
+                      } as CSSProperties)
+                    : undefined
+                }
                 onContextMenu={async (e) => {
                   if (!editor) return;
 
@@ -2611,6 +2681,7 @@ export function Editor({
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
     </div>
