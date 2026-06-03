@@ -1852,6 +1852,15 @@ async fn read_document(
 }
 
 #[tauri::command]
+async fn read_document_markdown(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    document::read_document_markdown(&folder_path, &document_path)
+}
+
+#[tauri::command]
 async fn read_document_for_note(
     note_id: String,
     state: State<'_, AppState>,
@@ -4016,6 +4025,7 @@ pub fn run() {
             create_document,
             list_documents,
             read_document,
+            read_document_markdown,
             read_document_for_note,
             create_document_page,
             rename_document_page,

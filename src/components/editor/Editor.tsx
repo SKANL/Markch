@@ -1860,6 +1860,20 @@ export function Editor({
     }
   }, [editor, getMarkdown]);
 
+  const handleCopyFullDocumentMarkdown = useCallback(async () => {
+    if (!documentDetail) return;
+    try {
+      const markdown = await notesService.readDocumentMarkdown(
+        documentDetail.path,
+      );
+      await invoke("copy_to_clipboard", { text: markdown });
+      toast.success("Copied full Document Markdown");
+    } catch (error) {
+      console.error("Failed to copy full document markdown:", error);
+      toast.error("Failed to copy full Document");
+    }
+  }, [documentDetail]);
+
   const handleCopyPlainText = useCallback(async () => {
     if (!editor) return;
     try {
@@ -1916,6 +1930,22 @@ export function Editor({
       toast.error("Failed to save markdown");
     }
   }, [editor, currentNote, getMarkdown]);
+
+  const handleDownloadFullDocumentMarkdown = useCallback(async () => {
+    if (!documentDetail) return;
+    try {
+      const markdown = await notesService.readDocumentMarkdown(
+        documentDetail.path,
+      );
+      const saved = await downloadMarkdown(markdown, documentDetail.title);
+      if (saved) {
+        toast.success("Full Document Markdown saved successfully");
+      }
+    } catch (error) {
+      console.error("Failed to download full document markdown:", error);
+      toast.error("Failed to save full Document");
+    }
+  }, [documentDetail]);
 
   // Toggle source mode — computes anchor data and toggles state;
   // focus/scroll restoration happens in the useLayoutEffect below.
@@ -2356,6 +2386,15 @@ export function Editor({
                   <CopyIcon className="w-4 h-4 stroke-[1.6]" />
                   Copy Markdown
                 </DropdownMenu.Item>
+                {documentDetail && (
+                  <DropdownMenu.Item
+                    className="px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2"
+                    onSelect={handleCopyFullDocumentMarkdown}
+                  >
+                    <CopyIcon className="w-4 h-4 stroke-[1.6]" />
+                    Copy Full Document Markdown
+                  </DropdownMenu.Item>
+                )}
                 <DropdownMenu.Item
                   className="px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2"
                   onSelect={handleCopyPlainText}
@@ -2385,6 +2424,15 @@ export function Editor({
                   <DownloadIcon className="w-4 h-4 stroke-[1.6]" />
                   Export Markdown
                 </DropdownMenu.Item>
+                {documentDetail && (
+                  <DropdownMenu.Item
+                    className="px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2"
+                    onSelect={handleDownloadFullDocumentMarkdown}
+                  >
+                    <DownloadIcon className="w-4 h-4 stroke-[1.6]" />
+                    Export Full Document Markdown
+                  </DropdownMenu.Item>
+                )}
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>

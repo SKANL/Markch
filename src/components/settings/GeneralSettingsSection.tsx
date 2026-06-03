@@ -4,8 +4,7 @@ import { toast } from "sonner";
 import { useNotes } from "../../context/NotesContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useGit } from "../../context/GitContext";
-import { Button } from "../ui";
-import { Input } from "../ui";
+import { Button, IconButton, Input } from "../ui";
 import {
   FolderIcon,
   FoldersIcon,
@@ -14,6 +13,8 @@ import {
   CloudPlusIcon,
   ChevronRightIcon,
   XIcon,
+  MinusIcon,
+  PlusIcon,
 } from "../icons";
 import type { Settings } from "../../types/note";
 
@@ -888,48 +889,25 @@ function DocumentsSettings() {
       </div>
       {documentsEnabled && (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Words per page</span>
-            <Input
-              type="number"
-              min={250}
-              max={2000}
-              step={50}
-              value={wordLimit}
-              disabled={isUpdating}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                if (Number.isFinite(value)) {
-                  save({
-                    documentPageWordLimit: Math.min(
-                      2000,
-                      Math.max(250, Math.round(value)),
-                    ),
-                  });
-                }
-              }}
-            />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Page zoom</span>
-            <Input
-              type="number"
-              min={50}
-              max={150}
-              step={5}
-              value={Math.round(pageZoom * 100)}
-              disabled={isUpdating}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                if (Number.isFinite(value)) {
-                  save({
-                    documentPageZoom:
-                      Math.min(150, Math.max(50, Math.round(value))) / 100,
-                  });
-                }
-              }}
-            />
-          </label>
+          <DocumentNumberStepper
+            label="Words per page"
+            value={wordLimit}
+            min={250}
+            max={2000}
+            step={50}
+            disabled={isUpdating}
+            onCommit={(value) => save({ documentPageWordLimit: value })}
+          />
+          <DocumentNumberStepper
+            label="Page zoom"
+            value={Math.round(pageZoom * 100)}
+            min={50}
+            max={150}
+            step={5}
+            suffix="%"
+            disabled={isUpdating}
+            onCommit={(value) => save({ documentPageZoom: value / 100 })}
+          />
         </div>
       )}
       {!foldersEnabled && documentsEnabled && (
@@ -938,6 +916,112 @@ function DocumentsSettings() {
         </p>
       )}
     </div>
+  );
+}
+
+interface DocumentNumberStepperProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix?: string;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function DocumentNumberStepper({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  disabled = false,
+  onCommit,
+}: DocumentNumberStepperProps) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = (rawValue: string) => {
+    const parsed = Number.parseInt(rawValue, 10);
+    const next = Number.isFinite(parsed)
+      ? clampNumber(Math.round(parsed), min, max)
+      : value;
+    setDraft(String(next));
+    if (next !== value) {
+      onCommit(next);
+    }
+  };
+
+  const stepValue = (direction: -1 | 1) => {
+    const next = clampNumber(value + direction * step, min, max);
+    setDraft(String(next));
+    if (next !== value) {
+      onCommit(next);
+    }
+  };
+
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <IconButton
+          type="button"
+          variant="outline"
+          size="md"
+          title={`Decrease ${label.toLowerCase()}`}
+          disabled={disabled || value <= min}
+          onClick={() => stepValue(-1)}
+        >
+          <MinusIcon className="w-4 h-4" />
+        </IconButton>
+        <div className="relative flex-1">
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={draft}
+            disabled={disabled}
+            onChange={(event) => {
+              const next = event.target.value.replace(/[^\d]/g, "");
+              setDraft(next);
+            }}
+            onBlur={() => commit(draft)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              } else if (event.key === "Escape") {
+                setDraft(String(value));
+                event.currentTarget.blur();
+              }
+            }}
+            className={`h-9 text-center tabular-nums [appearance:textfield] ${suffix ? "pr-8" : ""}`}
+          />
+          {suffix && (
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-text-muted">
+              {suffix}
+            </span>
+          )}
+        </div>
+        <IconButton
+          type="button"
+          variant="outline"
+          size="md"
+          title={`Increase ${label.toLowerCase()}`}
+          disabled={disabled || value >= max}
+          onClick={() => stepValue(1)}
+        >
+          <PlusIcon className="w-4 h-4" />
+        </IconButton>
+      </div>
+    </label>
   );
 }
 

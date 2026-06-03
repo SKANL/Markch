@@ -74,6 +74,10 @@ export async function readDocument(documentPath: string): Promise<DocumentDetail
   return invoke("read_document", { documentPath });
 }
 
+export async function readDocumentMarkdown(documentPath: string): Promise<string> {
+  return invoke("read_document_markdown", { documentPath });
+}
+
 export async function readDocumentForNote(
   noteId: string,
 ): Promise<DocumentDetail | null> {

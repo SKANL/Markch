@@ -346,6 +346,22 @@ pub fn read_document(notes_root: &Path, document_path: &str, word_limit: usize) 
     })
 }
 
+pub fn read_document_markdown(notes_root: &Path, document_path: &str) -> Result<String, String> {
+    let dir = document_dir(notes_root, document_path)?;
+    if !is_document_dir(&dir) {
+        return Err("Document not found".to_string());
+    }
+    let manifest = read_manifest(&dir)?;
+    let mut markdown = String::new();
+    for page in manifest.pages {
+        validate_page_file(&page.file)?;
+        let file_path = dir.join(page.file);
+        let content = fs::read_to_string(file_path).map_err(|e| e.to_string())?;
+        markdown.push_str(&content);
+    }
+    Ok(markdown)
+}
+
 pub fn read_document_for_note(
     notes_root: &Path,
     note_id: &str,
@@ -705,6 +721,13 @@ mod tests {
     }
 
     #[test]
+    fn read_document_markdown_rejects_escaping_paths() {
+        let root = temp_root("markdown-escape");
+        let result = read_document_markdown(&root, "../outside");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn detects_document_by_manifest() {
         let root = temp_root("detect");
         create_document(&root, Some("Parent".to_string()), "Doc".to_string()).unwrap();
@@ -721,6 +744,32 @@ mod tests {
         assert_eq!(detail.pages[0].index, 1);
         assert_eq!(detail.pages[1].index, 2);
         assert_eq!(detail.pages[1].title, "Second");
+    }
+
+    #[test]
+    fn read_document_markdown_concatenates_pages_in_manifest_order() {
+        let root = temp_root("markdown-order");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        create_document_page(&root, "Doc", Some("Second".to_string())).unwrap();
+        fs::write(root.join("Doc").join("001-Page 1.md"), "# First\n\nA\n").unwrap();
+        fs::write(root.join("Doc").join("002-Second.md"), "# Second\n\nB\n").unwrap();
+
+        let markdown = read_document_markdown(&root, "Doc").unwrap();
+
+        assert_eq!(markdown, "# First\n\nA\n# Second\n\nB\n");
+    }
+
+    #[test]
+    fn read_document_markdown_does_not_insert_extra_separators() {
+        let root = temp_root("markdown-no-separators");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        create_document_page(&root, "Doc", Some("Second".to_string())).unwrap();
+        fs::write(root.join("Doc").join("001-Page 1.md"), "one").unwrap();
+        fs::write(root.join("Doc").join("002-Second.md"), "two").unwrap();
+
+        let markdown = read_document_markdown(&root, "Doc").unwrap();
+
+        assert_eq!(markdown, "onetwo");
     }
 
     #[test]

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import * as ContextMenu from "@radix-ui/react-context-menu";
+import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import type { DocumentDetail, DocumentPage } from "../../types/note";
 import * as notesService from "../../services/notes";
@@ -18,10 +20,17 @@ import {
   AddNoteIcon,
   ArrowUpIcon,
   ChevronDownIcon,
+  CopyIcon,
+  FolderIcon,
   PencilIcon,
   TrashIcon,
 } from "../icons";
 import { FolderNameDialog } from "../notes/FolderNameDialog";
+
+const menuItemClass =
+  "px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2 rounded-sm";
+
+const menuSeparatorClass = "h-px bg-border my-1";
 
 interface DocumentPagesSidebarProps {
   document: DocumentDetail;
@@ -136,6 +145,33 @@ export function DocumentPagesSidebar({
     }
   }
 
+  async function handleCopyPageFilepath(page: DocumentPage) {
+    try {
+      const folder = await notesService.getNotesFolder();
+      if (!folder) return;
+      await invoke("copy_to_clipboard", {
+        text: `${folder}/${document.path}/${page.file}`,
+      });
+      toast.success("Page filepath copied");
+    } catch (error) {
+      console.error("Failed to copy page filepath:", error);
+      toast.error("Failed to copy filepath");
+    }
+  }
+
+  async function handleOpenDocumentFolder() {
+    try {
+      const folder = await notesService.getNotesFolder();
+      if (!folder) return;
+      await invoke("open_in_file_manager", {
+        path: `${folder}/${document.path}`,
+      });
+    } catch (error) {
+      console.error("Failed to open Document folder:", error);
+      toast.error("Failed to open Document folder");
+    }
+  }
+
   return (
     <aside className="w-52 shrink-0 border-r border-border bg-bg-secondary/70 flex flex-col">
       <div className="px-3 py-2.5 border-b border-border">
@@ -151,71 +187,128 @@ export function DocumentPagesSidebar({
         {document.pages.map((page, index) => {
           const isSelected = page.id === currentNoteId;
           return (
-            <div
-              key={page.file}
-              className={`group rounded-md border ${
-                isSelected
-                  ? "border-border bg-bg-muted"
-                  : "border-transparent hover:bg-bg-muted"
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => onSelectPage(page.id)}
-                className="w-full px-2 py-1.5 text-left"
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] text-text-muted tabular-nums">
-                    {String(page.index).padStart(2, "0")}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-sm text-text">
-                    {page.title}
-                  </span>
+            <ContextMenu.Root key={page.file}>
+              <ContextMenu.Trigger asChild>
+                <div
+                  className={`group rounded-md border ${
+                    isSelected
+                      ? "border-border bg-bg-muted"
+                      : "border-transparent hover:bg-bg-muted"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelectPage(page.id)}
+                    className="w-full px-2 py-1.5 text-left"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-text-muted tabular-nums">
+                        {String(page.index).padStart(2, "0")}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm text-text">
+                        {page.title}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
+                      <span>{page.wordCount} words</span>
+                      {page.overflow && (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          overflow
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  <div className="hidden group-hover:flex px-1.5 pb-1.5 gap-1">
+                    <IconButton
+                      onClick={() => handleMovePage(page, "up")}
+                      disabled={index === 0 || isWorking}
+                      title="Move page up"
+                      className="h-6 w-6"
+                    >
+                      <ArrowUpIcon className="w-3.5 h-3.5 stroke-[1.6]" />
+                    </IconButton>
+                    <IconButton
+                      onClick={() => handleMovePage(page, "down")}
+                      disabled={index === document.pages.length - 1 || isWorking}
+                      title="Move page down"
+                      className="h-6 w-6"
+                    >
+                      <ChevronDownIcon className="w-3.5 h-3.5 stroke-[1.6]" />
+                    </IconButton>
+                    <IconButton
+                      onClick={() => setRenamingPage(page)}
+                      disabled={isWorking}
+                      title="Rename page"
+                      className="h-6 w-6"
+                    >
+                      <PencilIcon className="w-3.5 h-3.5 stroke-[1.6]" />
+                    </IconButton>
+                    <IconButton
+                      onClick={() => setDeletingPage(page)}
+                      disabled={document.pages.length <= 1 || isWorking}
+                      title="Delete page"
+                      className="h-6 w-6"
+                    >
+                      <TrashIcon className="w-3.5 h-3.5 stroke-[1.6]" />
+                    </IconButton>
+                  </div>
                 </div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
-                  <span>{page.wordCount} words</span>
-                  {page.overflow && (
-                    <span className="text-amber-600 dark:text-amber-400">
-                      overflow
-                    </span>
-                  )}
-                </div>
-              </button>
-              <div className="hidden group-hover:flex px-1.5 pb-1.5 gap-1">
-                <IconButton
-                  onClick={() => handleMovePage(page, "up")}
-                  disabled={index === 0 || isWorking}
-                  title="Move page up"
-                  className="h-6 w-6"
-                >
-                  <ArrowUpIcon className="w-3.5 h-3.5 stroke-[1.6]" />
-                </IconButton>
-                <IconButton
-                  onClick={() => handleMovePage(page, "down")}
-                  disabled={index === document.pages.length - 1 || isWorking}
-                  title="Move page down"
-                  className="h-6 w-6"
-                >
-                  <ChevronDownIcon className="w-3.5 h-3.5 stroke-[1.6]" />
-                </IconButton>
-                <IconButton
-                  onClick={() => setRenamingPage(page)}
-                  disabled={isWorking}
-                  title="Rename page"
-                  className="h-6 w-6"
-                >
-                  <PencilIcon className="w-3.5 h-3.5 stroke-[1.6]" />
-                </IconButton>
-                <IconButton
-                  onClick={() => setDeletingPage(page)}
-                  disabled={document.pages.length <= 1 || isWorking}
-                  title="Delete page"
-                  className="h-6 w-6"
-                >
-                  <TrashIcon className="w-3.5 h-3.5 stroke-[1.6]" />
-                </IconButton>
-              </div>
-            </div>
+              </ContextMenu.Trigger>
+              <ContextMenu.Portal>
+                <ContextMenu.Content className="min-w-48 bg-bg border border-border rounded-md shadow-lg py-1 z-50">
+                  <ContextMenu.Item
+                    className={menuItemClass}
+                    onSelect={() => setRenamingPage(page)}
+                  >
+                    <PencilIcon className="w-4 h-4 stroke-[1.6]" />
+                    Rename
+                  </ContextMenu.Item>
+                  <ContextMenu.Item
+                    className={menuItemClass}
+                    disabled={index === 0 || isWorking}
+                    onSelect={() => handleMovePage(page, "up")}
+                  >
+                    <ArrowUpIcon className="w-4 h-4 stroke-[1.6]" />
+                    Move Up
+                  </ContextMenu.Item>
+                  <ContextMenu.Item
+                    className={menuItemClass}
+                    disabled={index === document.pages.length - 1 || isWorking}
+                    onSelect={() => handleMovePage(page, "down")}
+                  >
+                    <ChevronDownIcon className="w-4 h-4 stroke-[1.6]" />
+                    Move Down
+                  </ContextMenu.Item>
+                  <ContextMenu.Separator className={menuSeparatorClass} />
+                  <ContextMenu.Item
+                    className={menuItemClass}
+                    onSelect={() => handleCopyPageFilepath(page)}
+                  >
+                    <CopyIcon className="w-4 h-4 stroke-[1.6]" />
+                    Copy Page Filepath
+                  </ContextMenu.Item>
+                  <ContextMenu.Item
+                    className={menuItemClass}
+                    onSelect={handleOpenDocumentFolder}
+                  >
+                    <FolderIcon className="w-4 h-4 stroke-[1.6]" />
+                    Open Document Folder
+                  </ContextMenu.Item>
+                  <ContextMenu.Separator className={menuSeparatorClass} />
+                  <ContextMenu.Item
+                    className={
+                      menuItemClass +
+                      " text-red-500 hover:text-red-500 focus:text-red-500"
+                    }
+                    disabled={document.pages.length <= 1 || isWorking}
+                    onSelect={() => setDeletingPage(page)}
+                  >
+                    <TrashIcon className="w-4 h-4 stroke-[1.6]" />
+                    Delete Page
+                  </ContextMenu.Item>
+                </ContextMenu.Content>
+              </ContextMenu.Portal>
+            </ContextMenu.Root>
           );
         })}
       </div>

@@ -33,8 +33,11 @@ import {
   PinIcon,
   CopyIcon,
   ArrowUpIcon,
+  DownloadIcon,
+  FolderIcon,
 } from "../icons";
 import * as notesService from "../../services/notes";
+import { downloadMarkdown } from "../../services/pdf";
 import type {
   DocumentMetadata,
   FolderNode,
@@ -291,28 +294,138 @@ const DocumentItem = memo(function DocumentItem({
   onOpenDocument,
 }: DocumentItemProps) {
   const isFocused = focusedItemKey === `document:${document.path}`;
+  const { selectNote, refreshNotes } = useNotes();
+
+  const handleCreatePage = useCallback(async () => {
+    try {
+      const detail = await notesService.createDocumentPage(document.path);
+      await refreshNotes();
+      const created = detail.pages[detail.pages.length - 1];
+      if (created) {
+        await selectNote(created.id);
+      }
+    } catch (error) {
+      console.error("Failed to create Document page:", error);
+      toast.error("Failed to create page");
+    }
+  }, [document.path, refreshNotes, selectNote]);
+
+  const handleCopyFullMarkdown = useCallback(async () => {
+    try {
+      const markdown = await notesService.readDocumentMarkdown(document.path);
+      await invoke("copy_to_clipboard", { text: markdown });
+      toast.success("Copied full Document Markdown");
+    } catch (error) {
+      console.error("Failed to copy full Document Markdown:", error);
+      toast.error("Failed to copy full Document");
+    }
+  }, [document.path]);
+
+  const handleExportFullMarkdown = useCallback(async () => {
+    try {
+      const markdown = await notesService.readDocumentMarkdown(document.path);
+      const saved = await downloadMarkdown(markdown, document.title);
+      if (saved) {
+        toast.success("Full Document Markdown saved successfully");
+      }
+    } catch (error) {
+      console.error("Failed to export full Document Markdown:", error);
+      toast.error("Failed to export full Document");
+    }
+  }, [document.path, document.title]);
+
+  const handleCopyFolderPath = useCallback(async () => {
+    try {
+      const folder = await notesService.getNotesFolder();
+      if (!folder) return;
+      await invoke("copy_to_clipboard", { text: `${folder}/${document.path}` });
+      toast.success("Document folder path copied");
+    } catch (error) {
+      console.error("Failed to copy Document folder path:", error);
+      toast.error("Failed to copy folder path");
+    }
+  }, [document.path]);
+
+  const handleOpenFolder = useCallback(async () => {
+    try {
+      const folder = await notesService.getNotesFolder();
+      if (!folder) return;
+      await invoke("open_in_file_manager", { path: `${folder}/${document.path}` });
+    } catch (error) {
+      console.error("Failed to open Document folder:", error);
+      toast.error("Failed to open Document folder");
+    }
+  }, [document.path]);
 
   return (
-    <div
-      className={`flex items-center gap-1.5 py-1.5 cursor-pointer rounded-md select-none transition-colors ${
-        isSelected
-          ? "bg-bg-muted group-focus/notelist:ring-1 group-focus/notelist:ring-text-muted"
-          : isFocused
-            ? "bg-bg-muted/50 ring-1 ring-text-muted/30"
-            : "hover:bg-bg-muted"
-      }`}
-      style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
-      onClick={() => onOpenDocument(document.path)}
-      role="button"
-      tabIndex={-1}
-      title={`${document.title} Document`}
-    >
-      <NoteIcon className="w-4 h-4 stroke-[1.6] opacity-70 shrink-0" />
-      <span className="text-sm text-text truncate">{cleanTitle(document.title)}</span>
-      <span className="ml-auto text-[10px] text-text-muted shrink-0">
-        {document.pageCount}
-      </span>
-    </div>
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>
+        <div
+          className={`flex items-center gap-1.5 py-1.5 cursor-pointer rounded-md select-none transition-colors ${
+            isSelected
+              ? "bg-bg-muted group-focus/notelist:ring-1 group-focus/notelist:ring-text-muted"
+              : isFocused
+                ? "bg-bg-muted/50 ring-1 ring-text-muted/30"
+                : "hover:bg-bg-muted"
+          }`}
+          style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
+          onClick={() => onOpenDocument(document.path)}
+          role="button"
+          tabIndex={-1}
+          title={`${document.title} Document`}
+        >
+          <NoteIcon className="w-4 h-4 stroke-[1.6] opacity-70 shrink-0" />
+          <span className="text-sm text-text truncate">
+            {cleanTitle(document.title)}
+          </span>
+          <span className="ml-auto text-[10px] text-text-muted shrink-0">
+            {document.pageCount}
+          </span>
+        </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className="min-w-56 bg-bg border border-border rounded-md shadow-lg py-1 z-50">
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={() => onOpenDocument(document.path)}
+          >
+            <NoteIcon className="w-4 h-4 stroke-[1.6]" />
+            Open
+          </ContextMenu.Item>
+          <ContextMenu.Item className={menuItemClass} onSelect={handleCreatePage}>
+            <AddNoteIcon className="w-4 h-4 stroke-[1.6]" />
+            New Page
+          </ContextMenu.Item>
+          <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleCopyFullMarkdown}
+          >
+            <CopyIcon className="w-4 h-4 stroke-[1.6]" />
+            Copy Full Document Markdown
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleExportFullMarkdown}
+          >
+            <DownloadIcon className="w-4 h-4 stroke-[1.6]" />
+            Export Full Document Markdown
+          </ContextMenu.Item>
+          <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleCopyFolderPath}
+          >
+            <CopyIcon className="w-4 h-4 stroke-[1.6]" />
+            Copy Document Folder Path
+          </ContextMenu.Item>
+          <ContextMenu.Item className={menuItemClass} onSelect={handleOpenFolder}>
+            <FolderIcon className="w-4 h-4 stroke-[1.6]" />
+            Open Document Folder
+          </ContextMenu.Item>
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 });
 
