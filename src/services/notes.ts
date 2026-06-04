@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   DocumentDetail,
   DocumentMetadata,
+  DocumentNormalizeResult,
   Note,
   NoteMetadata,
   Settings,
@@ -78,6 +79,12 @@ export async function readDocumentMarkdown(documentPath: string): Promise<string
   return invoke("read_document_markdown", { documentPath });
 }
 
+export async function readDocumentEditMarkdown(
+  documentPath: string,
+): Promise<string> {
+  return invoke("read_document_edit_markdown", { documentPath });
+}
+
 export async function saveDocumentMarkdown(
   documentPath: string,
   markdown: string,
@@ -126,13 +133,13 @@ export async function moveDocumentPage(
 
 export async function normalizeDocumentForNote(
   noteId: string,
-): Promise<DocumentDetail | null> {
+): Promise<DocumentNormalizeResult | null> {
   return invoke("normalize_document_for_note", { noteId });
 }
 
 export async function normalizeDocument(
   documentPath: string,
-): Promise<DocumentDetail> {
+): Promise<DocumentNormalizeResult> {
   return invoke("normalize_document", { documentPath });
 }
 

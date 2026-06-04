@@ -161,12 +161,22 @@ function AppContent() {
         }
 
         if (result.success && documentContext) {
-          await notesService.normalizeDocumentForNote(currentNote.id);
+          const normalized = await notesService.normalizeDocumentForNote(
+            currentNote.id,
+          );
           await refreshNotes();
+          if (
+            normalized?.targetNoteId &&
+            normalized.targetNoteId !== currentNote.id
+          ) {
+            await selectNote(normalized.targetNoteId);
+          } else {
+            await reloadCurrentNote();
+          }
+        } else {
+          // Reload the current note from disk
+          await reloadCurrentNote();
         }
-
-        // Reload the current note from disk
-        await reloadCurrentNote();
 
         // Show results
         if (result.success) {
@@ -200,7 +210,7 @@ function AppContent() {
         setAiEditing(false);
       }
     },
-    [aiProvider, currentNote, refreshNotes, reloadCurrentNote],
+    [aiProvider, currentNote, refreshNotes, reloadCurrentNote, selectNote],
   );
 
   // Memoize display items to prevent unnecessary recalculations

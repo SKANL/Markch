@@ -702,11 +702,29 @@ export function Editor({
     notesService
       .readDocumentForNote(currentNote.id)
       .then((detail) => {
-        if (active) setDocumentDetail(detail);
+        if (!active) return;
+        if (detail) {
+          setDocumentDetail(detail);
+          return;
+        }
+        if (
+          documentDetail?.path &&
+          currentNote.id.startsWith(`${documentDetail.path}/`)
+        ) {
+          return;
+        }
+        setDocumentDetail(null);
       })
       .catch((error) => {
         console.error("Failed to load document:", error);
-        if (active) setDocumentDetail(null);
+        if (!active) return;
+        if (
+          documentDetail?.path &&
+          currentNote.id.startsWith(`${documentDetail.path}/`)
+        ) {
+          return;
+        }
+        setDocumentDetail(null);
       });
 
     return () => {
@@ -720,6 +738,7 @@ export function Editor({
     settings?.documentsEnabled,
     settings?.documentPageWordLimit,
     documentEditMode,
+    documentDetail?.path,
   ]);
 
   // Calculate if current note is pinned
@@ -2108,7 +2127,9 @@ export function Editor({
         if (documentEditModeRef.current === "all") return;
         try {
           await flushPendingSave();
-          const markdown = await notesService.readDocumentMarkdown(documentDetail.path);
+          const markdown = await notesService.readDocumentEditMarkdown(
+            documentDetail.path,
+          );
           const manager = editor.storage.markdown?.manager;
           isLoadingRef.current = true;
           allPagesDocumentPathRef.current = documentDetail.path;
@@ -2178,10 +2199,23 @@ export function Editor({
       const currentPageIndex =
         documentDetail.pages.findIndex((page) => page.id === currentNote?.id);
       await flushAllPagesOrPendingSave();
+      const wasAllPagesMode = documentEditModeRef.current === "all";
       const documentPath = allPagesDocumentPathRef.current ?? documentDetail.path;
-      const next = await notesService.normalizeDocument(documentPath);
+      const result = await notesService.normalizeDocument(documentPath);
+      const next = result.document;
       setDocumentDetail(next);
       await notesCtx.refreshNotes();
+      toast.success(
+        result.changed
+          ? `Document normalized: ${next.pages.length} ${next.pages.length === 1 ? "page" : "pages"}`
+          : "Document already normalized",
+      );
+      if (wasAllPagesMode) {
+        allPagesDocumentPathRef.current = next.path;
+        setDocumentEditMode("all");
+        setDocumentSaveStatus("saved");
+        return;
+      }
       allPagesDocumentPathRef.current = null;
       setDocumentEditMode("page");
       const currentId = currentNote?.id;
@@ -2190,7 +2224,6 @@ export function Editor({
         (currentPageIndex >= 0 ? next.pages[currentPageIndex] : undefined) ??
         next.pages[0];
       if (target) await notesCtx.selectNote(target.id);
-      toast.success(`Document normalized: ${next.pages.length} ${next.pages.length === 1 ? "page" : "pages"}`);
     } catch (error) {
       console.error("Failed to normalize Document:", error);
       toast.error("Failed to normalize Document");

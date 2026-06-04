@@ -1183,10 +1183,20 @@ async fn save_note(
         }
     }
 
-    let final_content = fs::read_to_string(&file_path)
+    let response_id = normalized_document
+        .as_ref()
+        .and_then(|result| result.target_note_id.clone())
+        .unwrap_or_else(|| final_id.clone());
+    let response_file_path = abs_path_from_id(&folder_path, &response_id)?;
+    if response_id != final_id {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        cache.remove(&final_id);
+    }
+
+    let final_content = fs::read_to_string(&response_file_path)
         .await
         .unwrap_or_else(|_| content.clone());
-    let final_metadata = fs::metadata(&file_path)
+    let final_metadata = fs::metadata(&response_file_path)
         .await
         .map_err(|e| e.to_string())?;
     let final_modified = final_metadata
@@ -1197,10 +1207,10 @@ async fn save_note(
         .unwrap_or(modified);
 
     Ok(Note {
-        id: final_id,
+        id: response_id,
         title: extract_title(&final_content),
         content: final_content,
-        path: file_path.to_string_lossy().into_owned(),
+        path: response_file_path.to_string_lossy().into_owned(),
         modified: final_modified,
     })
 }
@@ -1861,6 +1871,15 @@ async fn read_document_markdown(
 }
 
 #[tauri::command]
+async fn read_document_edit_markdown(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    document::read_document_edit_markdown(&folder_path, &document_path)
+}
+
+#[tauri::command]
 async fn save_document_markdown(
     document_path: String,
     markdown: String,
@@ -1943,10 +1962,10 @@ async fn move_document_page(
 async fn normalize_document_for_note(
     note_id: String,
     state: State<'_, AppState>,
-) -> Result<Option<document::DocumentDetail>, String> {
+) -> Result<Option<document::DocumentNormalizeResult>, String> {
     let (folder_path, word_limit) = document_context(&state)?;
-    let detail = document::normalize_document_for_note_id(&folder_path, &note_id, word_limit)?;
-    if detail.is_some() {
+    let result = document::normalize_document_for_note_id(&folder_path, &note_id, word_limit)?;
+    if result.is_some() {
         let ignored_dirs = {
             let settings = state.settings.read().expect("settings read lock");
             get_effective_ignored_dirs(&settings)
@@ -1956,16 +1975,16 @@ async fn normalize_document_for_note(
             let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
         }
     }
-    Ok(detail)
+    Ok(result)
 }
 
 #[tauri::command]
 async fn normalize_document(
     document_path: String,
     state: State<'_, AppState>,
-) -> Result<document::DocumentDetail, String> {
+) -> Result<document::DocumentNormalizeResult, String> {
     let (folder_path, word_limit) = document_context(&state)?;
-    let detail = document::normalize_document(&folder_path, &document_path, word_limit)?;
+    let result = document::normalize_document(&folder_path, &document_path, word_limit)?;
     let ignored_dirs = {
         let settings = state.settings.read().expect("settings read lock");
         get_effective_ignored_dirs(&settings)
@@ -1974,7 +1993,7 @@ async fn normalize_document(
     if let Some(ref search_index) = *index {
         let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
     }
-    Ok(detail)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -4063,6 +4082,7 @@ pub fn run() {
             list_documents,
             read_document,
             read_document_markdown,
+            read_document_edit_markdown,
             save_document_markdown,
             read_document_for_note,
             create_document_page,

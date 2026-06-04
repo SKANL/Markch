@@ -36,6 +36,12 @@ export interface DocumentDetail {
   pages: DocumentPage[];
 }
 
+export interface DocumentNormalizeResult {
+  document: DocumentDetail;
+  changed: boolean;
+  targetNoteId?: string | null;
+}
+
 export interface ThemeSettings {
   mode: "light" | "dark" | "system";
 }

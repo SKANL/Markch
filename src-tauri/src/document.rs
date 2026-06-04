@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 const MANIFEST_FILE: &str = ".markch-document.json";
 const DOCUMENT_TYPE: &str = "markch-document";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentPageManifest {
     pub file: String,
@@ -53,6 +53,14 @@ pub struct DocumentDetail {
     pub pages: Vec<DocumentPage>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentNormalizeResult {
+    pub document: DocumentDetail,
+    pub changed: bool,
+    pub target_note_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveDirection {
     Up,
@@ -77,6 +85,11 @@ struct MarkdownBlock {
 struct PageDraft {
     title: String,
     content: String,
+}
+
+struct PaginatedWriteResult {
+    document: DocumentDetail,
+    changed: bool,
 }
 
 fn now_string() -> String {
@@ -167,6 +180,24 @@ fn file_from_note_id(note_id: &str) -> Option<(String, String)> {
 fn page_file_name(index: usize, title: &str) -> String {
     let sanitized = crate::sanitize_filename(title);
     format!("{:03}-{}.md", index, sanitized)
+}
+
+fn page_index_for_file(manifest: &DocumentManifest, file: &str) -> usize {
+    if let Some(index) = manifest.pages.iter().position(|page| page.file == file) {
+        return index;
+    }
+    file.split_once('-')
+        .and_then(|(prefix, _)| prefix.parse::<usize>().ok())
+        .and_then(|index| index.checked_sub(1))
+        .unwrap_or(0)
+}
+
+fn target_note_id_for_index(document: &DocumentDetail, index: usize) -> Option<String> {
+    document
+        .pages
+        .get(index)
+        .or_else(|| document.pages.last())
+        .map(|page| page.id.clone())
 }
 
 fn ensure_unique_folder(
@@ -283,8 +314,7 @@ pub fn create_document(
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let first_file = page_file_name(1, "Page 1");
-    let first_content = "# Page 1\n\n";
-    fs::write(dir.join(&first_file), first_content).map_err(|e| e.to_string())?;
+    fs::write(dir.join(&first_file), "").map_err(|e| e.to_string())?;
 
     let now = now_string();
     let manifest = DocumentManifest {
@@ -380,6 +410,47 @@ pub fn read_document_markdown(notes_root: &Path, document_path: &str) -> Result<
     Ok(markdown)
 }
 
+pub fn read_document_edit_markdown(
+    notes_root: &Path,
+    document_path: &str,
+) -> Result<String, String> {
+    read_document_markdown_with_boundaries(notes_root, document_path)
+}
+
+fn read_document_markdown_for_normalize(
+    notes_root: &Path,
+    document_path: &str,
+) -> Result<String, String> {
+    read_document_markdown_with_boundaries(notes_root, document_path)
+}
+
+fn read_document_markdown_with_boundaries(
+    notes_root: &Path,
+    document_path: &str,
+) -> Result<String, String> {
+    let dir = document_dir(notes_root, document_path)?;
+    if !is_document_dir(&dir) {
+        return Err("Document not found".to_string());
+    }
+    let manifest = read_manifest(&dir)?;
+    let mut pages = Vec::new();
+    for page in manifest.pages {
+        validate_page_file(&page.file)?;
+        let file_path = dir.join(page.file);
+        pages.push(fs::read_to_string(file_path).map_err(|e| e.to_string())?);
+    }
+    Ok(join_markdown_pages_for_normalize(&pages))
+}
+
+fn join_markdown_pages_for_normalize(pages: &[String]) -> String {
+    pages
+        .iter()
+        .map(|page| page.trim())
+        .filter(|page| !page.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 pub fn save_document_markdown(
     notes_root: &Path,
     document_path: &str,
@@ -387,6 +458,7 @@ pub fn save_document_markdown(
     word_limit: usize,
 ) -> Result<DocumentDetail, String> {
     write_paginated_document(notes_root, document_path, markdown, word_limit)
+        .map(|result| result.document)
 }
 
 pub fn read_document_for_note(
@@ -401,10 +473,7 @@ pub fn read_document_for_note(
     if !is_document_dir(&dir) {
         return Ok(None);
     }
-    let manifest = read_manifest(&dir)?;
-    if !manifest.pages.iter().any(|page| page.file == file) {
-        return Ok(None);
-    }
+    validate_page_file(&file)?;
     read_document(notes_root, &document_path, word_limit).map(Some)
 }
 
@@ -416,12 +485,17 @@ pub fn create_document_page(
     let dir = document_dir(notes_root, document_path)?;
     let mut manifest = read_manifest(&dir)?;
     let index = manifest.pages.len() + 1;
-    let title = title
+    let explicit_title = title
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty());
+    let title = explicit_title
+        .clone()
         .unwrap_or_else(|| format!("Page {}", index));
     let file = page_file_name(index, &title);
-    fs::write(dir.join(&file), format!("# {}\n\n", title)).map_err(|e| e.to_string())?;
+    let content = explicit_title
+        .map(|value| format!("# {}\n\n", value))
+        .unwrap_or_default();
+    fs::write(dir.join(&file), content).map_err(|e| e.to_string())?;
     manifest.pages.push(DocumentPageManifest { file, title });
     manifest.updated_at = now_string();
     write_manifest(&dir, &manifest)?;
@@ -535,24 +609,33 @@ pub fn normalize_document_for_note_id(
     notes_root: &Path,
     note_id: &str,
     word_limit: usize,
-) -> Result<Option<DocumentDetail>, String> {
-    let Some((document_path, _)) = file_from_note_id(note_id) else {
+) -> Result<Option<DocumentNormalizeResult>, String> {
+    let Some((document_path, file)) = file_from_note_id(note_id) else {
         return Ok(None);
     };
     let dir = document_dir(notes_root, &document_path)?;
     if !is_document_dir(&dir) {
         return Ok(None);
     }
-    normalize_document(notes_root, &document_path, word_limit).map(Some)
+    let manifest = read_manifest(&dir)?;
+    let page_index = page_index_for_file(&manifest, &file);
+    let mut result = normalize_document(notes_root, &document_path, word_limit)?;
+    result.target_note_id = target_note_id_for_index(&result.document, page_index);
+    Ok(Some(result))
 }
 
 pub fn normalize_document(
     notes_root: &Path,
     document_path: &str,
     word_limit: usize,
-) -> Result<DocumentDetail, String> {
-    let markdown = read_document_markdown(notes_root, document_path)?;
-    write_paginated_document(notes_root, document_path, &markdown, word_limit)
+) -> Result<DocumentNormalizeResult, String> {
+    let markdown = read_document_markdown_for_normalize(notes_root, document_path)?;
+    let result = write_paginated_document(notes_root, document_path, &markdown, word_limit)?;
+    Ok(DocumentNormalizeResult {
+        document: result.document,
+        changed: result.changed,
+        target_note_id: None,
+    })
 }
 
 fn write_paginated_document(
@@ -560,7 +643,7 @@ fn write_paginated_document(
     document_path: &str,
     markdown: &str,
     word_limit: usize,
-) -> Result<DocumentDetail, String> {
+) -> Result<PaginatedWriteResult, String> {
     let word_limit = word_limit.clamp(250, 2000);
     let dir = document_dir(notes_root, document_path)?;
     let manifest = read_manifest(&dir)?;
@@ -605,6 +688,13 @@ fn write_paginated_document(
         }
     }
 
+    if manifest.pages == next_pages && page_contents_match_drafts(&dir, &next_pages, &drafts)? {
+        return Ok(PaginatedWriteResult {
+            document: read_document(notes_root, document_path, word_limit)?,
+            changed: false,
+        });
+    }
+
     let mut temp_pages = Vec::new();
     for (idx, draft) in drafts.iter().enumerate() {
         let temp_file = format!(".markch-write-{}-{:03}.md.tmp", nonce, idx + 1);
@@ -631,7 +721,28 @@ fn write_paginated_document(
         cleanup_temp_files(&dir, &temp_pages, Some(&temp_manifest_file));
     }
     result?;
-    read_document(notes_root, document_path, word_limit)
+    Ok(PaginatedWriteResult {
+        document: read_document(notes_root, document_path, word_limit)?,
+        changed: true,
+    })
+}
+
+fn page_contents_match_drafts(
+    dir: &Path,
+    pages: &[DocumentPageManifest],
+    drafts: &[PageDraft],
+) -> Result<bool, String> {
+    if pages.len() != drafts.len() {
+        return Ok(false);
+    }
+    for (page, draft) in pages.iter().zip(drafts.iter()) {
+        validate_page_file(&page.file)?;
+        let content = fs::read_to_string(dir.join(&page.file)).map_err(|e| e.to_string())?;
+        if content != draft.content {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn publish_paginated_document(
@@ -770,13 +881,12 @@ fn split_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
 }
 
 fn paginate_markdown(markdown: &str, limit: usize) -> Vec<PageDraft> {
-    let mut blocks = split_markdown_blocks(markdown);
+    let blocks = split_markdown_blocks(markdown);
     if blocks.is_empty() {
-        blocks.push(MarkdownBlock {
-            text: "# Page 1".to_string(),
-            words: 2,
-            kind: BlockKind::Heading,
-        });
+        return vec![PageDraft {
+            title: "Page 1".to_string(),
+            content: String::new(),
+        }];
     }
 
     let mut pages = Vec::new();
@@ -808,7 +918,7 @@ fn paginate_markdown(markdown: &str, limit: usize) -> Vec<PageDraft> {
     if pages.is_empty() {
         vec![PageDraft {
             title: "Page 1".to_string(),
-            content: "# Page 1\n\n".to_string(),
+            content: String::new(),
         }]
     } else {
         pages
@@ -831,18 +941,7 @@ fn compose_page_draft(index: usize, blocks: &[MarkdownBlock]) -> PageDraft {
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    if !blocks
-        .iter()
-        .any(|block| matches!(block.kind, BlockKind::Heading))
-    {
-        content = if content.is_empty() {
-            format!("# {}", title)
-        } else {
-            format!("# {}\n\n{}", title, content)
-        };
-    }
-
-    if !content.ends_with('\n') {
+    if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
 
@@ -893,6 +992,12 @@ mod tests {
         root
     }
 
+    fn normalize_detail(root: &Path, document_path: &str, word_limit: usize) -> DocumentDetail {
+        normalize_document(root, document_path, word_limit)
+            .unwrap()
+            .document
+    }
+
     #[test]
     fn creates_and_reads_manifest() {
         let root = temp_root("manifest");
@@ -902,6 +1007,22 @@ mod tests {
         assert!(root.join("Project Alpha").join(MANIFEST_FILE).exists());
         let reread = read_document(&root, "Project Alpha", 800).unwrap();
         assert_eq!(reread.pages[0].file, "001-Page 1.md");
+    }
+
+    #[test]
+    fn automatic_page_titles_do_not_write_synthetic_headers() {
+        let root = temp_root("automatic-page-title");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        create_document_page(&root, "Doc", None).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("Doc").join("001-Page 1.md")).unwrap(),
+            ""
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Doc").join("002-Page 2.md")).unwrap(),
+            ""
+        );
     }
 
     #[test]
@@ -964,6 +1085,34 @@ mod tests {
     }
 
     #[test]
+    fn read_document_edit_markdown_inserts_stable_page_boundaries() {
+        let root = temp_root("edit-markdown-boundaries");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        create_document_page(&root, "Doc", Some("Second".to_string())).unwrap();
+        fs::write(root.join("Doc").join("001-Page 1.md"), "one").unwrap();
+        fs::write(root.join("Doc").join("002-Second.md"), "two").unwrap();
+
+        let markdown = read_document_edit_markdown(&root, "Doc").unwrap();
+
+        assert_eq!(markdown, "one\n\ntwo");
+    }
+
+    #[test]
+    fn normalize_reads_pages_with_stable_markdown_boundaries() {
+        let root = temp_root("normalize-boundaries");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        create_document_page(&root, "Doc", Some("Second".to_string())).unwrap();
+        fs::write(root.join("Doc").join("001-Page 1.md"), "one").unwrap();
+        fs::write(root.join("Doc").join("002-Second.md"), "two").unwrap();
+
+        let detail = normalize_detail(&root, "Doc", 250);
+        let content = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
+
+        assert_eq!(detail.pages.len(), 1);
+        assert_eq!(content, "one\n\ntwo\n");
+    }
+
+    #[test]
     fn paginates_markdown_into_multiple_pages() {
         let root = temp_root("paginate");
         create_document(&root, None, "Doc".to_string()).unwrap();
@@ -981,7 +1130,7 @@ mod tests {
             format!("# Page 1\n\n{}\n\n{}\n", first_words, second_words),
         )
         .unwrap();
-        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let detail = normalize_detail(&root, "Doc", 250);
         assert_eq!(detail.pages.len(), 2);
         let first = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
         let second = fs::read_to_string(root.join("Doc").join(&detail.pages[1].file)).unwrap();
@@ -1004,7 +1153,7 @@ mod tests {
         )
         .unwrap();
 
-        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let detail = normalize_detail(&root, "Doc", 250);
 
         assert_eq!(detail.pages.len(), 2);
         assert_eq!(detail.pages[1].title, "Next Section");
@@ -1019,10 +1168,107 @@ mod tests {
         let page = root.join("Doc").join("001-Page 1.md");
         fs::write(&page, "## Section Title\n\nbody\n").unwrap();
 
-        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let detail = normalize_detail(&root, "Doc", 250);
 
         assert_eq!(detail.pages[0].title, "Section Title");
         assert_eq!(detail.pages[0].file, "001-Section Title.md");
+    }
+
+    #[test]
+    fn page_without_heading_uses_metadata_title_without_inserting_header() {
+        let root = temp_root("metadata-title");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let page = root.join("Doc").join("001-Page 1.md");
+        fs::write(&page, "plain body\n").unwrap();
+
+        let detail = normalize_detail(&root, "Doc", 250);
+        let content = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
+
+        assert_eq!(detail.pages[0].title, "Page 1");
+        assert_eq!(content, "plain body\n");
+        assert!(!content.starts_with("# Page 1"));
+    }
+
+    #[test]
+    fn normalize_is_idempotent_after_first_write() {
+        let root = temp_root("normalize-idempotent");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let body = (0..150)
+            .map(|i| format!("word{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(
+            root.join("Doc").join("001-Page 1.md"),
+            format!("# First\n\n{}\n\n## Second\n\nbody\n", body),
+        )
+        .unwrap();
+
+        let first = normalize_document(&root, "Doc", 250).unwrap();
+        let first_files = first
+            .document
+            .pages
+            .iter()
+            .map(|page| {
+                (
+                    page.file.clone(),
+                    fs::read_to_string(root.join("Doc").join(&page.file)).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let second = normalize_document(&root, "Doc", 250).unwrap();
+        let second_files = second
+            .document
+            .pages
+            .iter()
+            .map(|page| {
+                (
+                    page.file.clone(),
+                    fs::read_to_string(root.join("Doc").join(&page.file)).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(first.changed);
+        assert!(!second.changed);
+        assert_eq!(first.document.pages.len(), second.document.pages.len());
+        assert_eq!(first_files, second_files);
+    }
+
+    #[test]
+    fn normalize_for_note_returns_equivalent_target_note_id() {
+        let root = temp_root("normalize-note-target");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        let body = (0..150)
+            .map(|i| format!("word{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(
+            root.join("Doc").join("001-Page 1.md"),
+            format!("# First\n\n{}\n\n## Second\n\nbody\n", body),
+        )
+        .unwrap();
+
+        let result = normalize_document_for_note_id(&root, "Doc/001-Page 1", 250)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.target_note_id.as_deref(), Some("Doc/001-First"));
+        assert!(root.join("Doc").join("001-First.md").exists());
+    }
+
+    #[test]
+    fn read_document_for_note_recovers_from_obsolete_page_id() {
+        let root = temp_root("obsolete-page-id");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        fs::write(root.join("Doc").join("001-Page 1.md"), "# First\n\nbody\n").unwrap();
+        normalize_document(&root, "Doc", 250).unwrap();
+
+        let detail = read_document_for_note(&root, "Doc/001-Page 1", 250)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(detail.path, "Doc");
+        assert_eq!(detail.pages[0].id, "Doc/001-First");
     }
 
     #[test]
@@ -1036,7 +1282,7 @@ mod tests {
             .join(" ");
         fs::write(&page, format!("# Long\n\n{}\n", paragraph)).unwrap();
 
-        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let detail = normalize_detail(&root, "Doc", 250);
         let first = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
 
         assert_eq!(detail.pages.len(), 1);
@@ -1060,7 +1306,7 @@ mod tests {
             .join(" ");
         fs::write(&page, format!("# Alpha\n\n{}\n\n{}\n", first, second)).unwrap();
 
-        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let detail = normalize_detail(&root, "Doc", 250);
         let first_page = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
         let second_page = fs::read_to_string(root.join("Doc").join(&detail.pages[1].file)).unwrap();
 
@@ -1154,7 +1400,7 @@ mod tests {
             format!("# Page 1\n\n```txt\n{}\n```\n\nnext block\n", code_words),
         )
         .unwrap();
-        let detail = normalize_document(&root, "Doc", 250).unwrap();
+        let detail = normalize_detail(&root, "Doc", 250);
         let first = fs::read_to_string(root.join("Doc").join(&detail.pages[0].file)).unwrap();
         assert!(first.contains("```txt"));
         assert!(detail.pages[0].overflow);

@@ -343,12 +343,15 @@ const DocumentItem = memo(function DocumentItem({
         );
         return;
       }
-      const next = await notesService.normalizeDocument(document.path);
+      const result = await notesService.normalizeDocument(document.path);
+      const next = result.document;
       await refreshNotes();
       toast.success(
-        `Document normalized: ${next.pages.length} ${
-          next.pages.length === 1 ? "page" : "pages"
-        }`,
+        result.changed
+          ? `Document normalized: ${next.pages.length} ${
+              next.pages.length === 1 ? "page" : "pages"
+            }`
+          : "Document already normalized",
       );
     } catch (error) {
       console.error("Failed to normalize Document:", error);
