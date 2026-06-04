@@ -256,34 +256,43 @@ export function NoteList({
   const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
+  const [documentsLoading, setDocumentsLoading] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Load settings when notes change
+  const loadSidebarMetadata = useCallback(async (active: () => boolean) => {
+    setDocumentsLoading(true);
+    try {
+      const nextSettings = await notesService.getSettings();
+      if (!active()) return;
+      setSettings(nextSettings);
+      if (
+        nextSettings.foldersEnabled === true &&
+        nextSettings.documentsEnabled === true
+      ) {
+        try {
+          const nextDocuments = await notesService.listDocuments();
+          if (active()) setDocuments(nextDocuments);
+        } catch (error) {
+          console.error("Failed to load documents:", error);
+        }
+      } else {
+        setDocuments([]);
+      }
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    } finally {
+      if (active()) setDocumentsLoading(false);
+    }
+  }, []);
+
+  // Load settings and Documents when notes change
   useEffect(() => {
     let active = true;
-    notesService
-      .getSettings()
-      .then(async (nextSettings) => {
-        if (!active) return;
-        setSettings(nextSettings);
-        if (
-          nextSettings.foldersEnabled === true &&
-          nextSettings.documentsEnabled === true
-        ) {
-          const nextDocuments = await notesService.listDocuments();
-          if (active) setDocuments(nextDocuments);
-        } else if (active) {
-          setDocuments([]);
-        }
-      })
-      .catch((error) => {
-        console.error("Failed to load settings:", error);
-        if (active) setDocuments([]);
-      });
+    void loadSidebarMetadata(() => active);
     return () => {
       active = false;
     };
-  }, [notes]);
+  }, [loadSidebarMetadata, notes]);
 
   // Calculate pinned IDs set for efficient lookup
   const pinnedIds = useMemo(
@@ -350,8 +359,11 @@ export function NoteList({
 
   const foldersEnabled = settings?.foldersEnabled === true;
   const isSearching = searchQuery.trim().length > 0;
+  const hasDocuments = foldersEnabled && documents.length > 0;
+  const hasVisibleContent =
+    displayItems.length > 0 || (!isSearching && hasDocuments);
 
-  if (isLoading && notes.length === 0) {
+  if ((isLoading || documentsLoading) && notes.length === 0 && !hasDocuments) {
     return (
       <div className="p-4 text-center text-text-muted select-none">
         Loading...
@@ -367,7 +379,7 @@ export function NoteList({
     );
   }
 
-  if (displayItems.length === 0) {
+  if (!documentsLoading && !hasVisibleContent) {
     return (
       <div className="p-4 text-center text-sm text-text-muted select-none">
         No notes yet

@@ -332,6 +332,52 @@ pub fn create_document(
     read_document(notes_root, &document_path, 800)
 }
 
+pub fn rename_document(
+    notes_root: &Path,
+    document_path: &str,
+    new_name: String,
+    word_limit: usize,
+) -> Result<DocumentDetail, String> {
+    validate_document_path(document_path)?;
+    if new_name.trim().is_empty() {
+        return Err("Document name cannot be empty".to_string());
+    }
+    let clean_name = crate::sanitize_filename(new_name.trim());
+
+    let old_path = normalize_rel_path(document_path);
+    let old_dir = document_dir(notes_root, &old_path)?;
+    if !old_dir.is_dir() || !is_document_dir(&old_dir) {
+        return Err("Path is not a Markch Document".to_string());
+    }
+
+    let mut manifest = read_manifest(&old_dir)?;
+    let parent_path = old_path.rsplit_once('/').map(|(parent, _)| parent);
+    let new_path = if let Some(parent) = parent_path {
+        format!("{}/{}", parent, clean_name)
+    } else {
+        clean_name.clone()
+    };
+    let new_dir = document_dir(notes_root, &new_path)?;
+    if new_dir.exists() {
+        return Err("A folder with that name already exists".to_string());
+    }
+
+    fs::rename(&old_dir, &new_dir).map_err(|e| e.to_string())?;
+    manifest.title = clean_name;
+    manifest.updated_at = now_string();
+    write_manifest(&new_dir, &manifest)?;
+    read_document(notes_root, &new_path, word_limit)
+}
+
+pub fn delete_document(notes_root: &Path, document_path: &str) -> Result<(), String> {
+    validate_document_path(document_path)?;
+    let dir = document_dir(notes_root, document_path)?;
+    if !dir.is_dir() || !is_document_dir(&dir) {
+        return Err("Path is not a Markch Document".to_string());
+    }
+    fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+}
+
 pub fn list_documents(
     notes_root: &Path,
     ignored_dirs: &[String],
@@ -352,7 +398,9 @@ pub fn list_documents(
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let manifest = read_manifest(entry.path())?;
+        let Ok(manifest) = read_manifest(entry.path()) else {
+            continue;
+        };
         documents.push(DocumentMetadata {
             path: rel,
             title: manifest.title,
@@ -1040,11 +1088,129 @@ mod tests {
     }
 
     #[test]
+    fn list_documents_skips_invalid_manifest_and_keeps_valid_documents() {
+        let root = temp_root("list-documents-invalid-manifest");
+        create_document(&root, None, "Valid".to_string()).unwrap();
+        fs::create_dir_all(root.join("Broken")).unwrap();
+        fs::write(root.join("Broken").join(MANIFEST_FILE), "{ invalid json").unwrap();
+
+        let documents = list_documents(&root, &[]).unwrap();
+
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].path, "Valid");
+    }
+
+    #[test]
     fn detects_document_by_manifest() {
         let root = temp_root("detect");
         create_document(&root, Some("Parent".to_string()), "Doc".to_string()).unwrap();
         assert!(is_note_in_document(&root, "Parent/Doc/001-Page 1"));
         assert!(!is_note_in_document(&root, "Parent/Other/001-Page 1"));
+    }
+
+    #[test]
+    fn renames_document_folder_and_manifest_title() {
+        let root = temp_root("rename-document");
+        create_document(&root, Some("Parent".to_string()), "Draft".to_string()).unwrap();
+        fs::write(
+            root.join("Parent").join("Draft").join("001-Page 1.md"),
+            "# First\n\nBody\n",
+        )
+        .unwrap();
+
+        let detail =
+            rename_document(&root, "Parent/Draft", "Final Draft".to_string(), 800).unwrap();
+
+        assert_eq!(detail.path, "Parent/Final Draft");
+        assert_eq!(detail.title, "Final Draft");
+        assert!(root
+            .join("Parent")
+            .join("Final Draft")
+            .join(MANIFEST_FILE)
+            .exists());
+        assert!(!root.join("Parent").join("Draft").exists());
+        assert_eq!(detail.pages[0].id, "Parent/Final Draft/001-Page 1");
+        let manifest =
+            read_manifest(&root.join("Parent").join("Final Draft")).expect("manifest after rename");
+        assert_eq!(manifest.title, "Final Draft");
+        assert_eq!(
+            fs::read_to_string(
+                root.join("Parent")
+                    .join("Final Draft")
+                    .join("001-Page 1.md")
+            )
+            .unwrap(),
+            "# First\n\nBody\n"
+        );
+    }
+
+    #[test]
+    fn rename_document_rejects_escaping_paths() {
+        let root = temp_root("rename-document-escape");
+
+        let result = rename_document(&root, "../Doc", "Other".to_string(), 800);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rename_document_rejects_collisions() {
+        let root = temp_root("rename-document-collision");
+        create_document(&root, None, "Draft".to_string()).unwrap();
+        fs::create_dir_all(root.join("Existing")).unwrap();
+
+        let result = rename_document(&root, "Draft", "Existing".to_string(), 800);
+
+        assert!(result.is_err());
+        assert!(root.join("Draft").exists());
+        assert!(root.join("Existing").exists());
+    }
+
+    #[test]
+    fn delete_document_removes_valid_document_folder() {
+        let root = temp_root("delete-document");
+        create_document(&root, None, "Doc".to_string()).unwrap();
+        create_document_page(&root, "Doc", Some("Second".to_string())).unwrap();
+
+        delete_document(&root, "Doc").unwrap();
+
+        assert!(!root.join("Doc").exists());
+    }
+
+    #[test]
+    fn delete_document_rejects_escaping_paths() {
+        let root = temp_root("delete-document-escape");
+
+        let result = delete_document(&root, "../outside");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delete_document_rejects_regular_folders() {
+        let root = temp_root("delete-document-regular-folder");
+        fs::create_dir_all(root.join("Regular")).unwrap();
+        fs::write(root.join("Regular").join("note.md"), "body").unwrap();
+
+        let result = delete_document(&root, "Regular");
+
+        assert!(result.is_err());
+        assert!(root.join("Regular").exists());
+        assert!(root.join("Regular").join("note.md").exists());
+    }
+
+    #[test]
+    fn delete_document_does_not_affect_other_documents_or_notes() {
+        let root = temp_root("delete-document-isolated");
+        create_document(&root, None, "Doc A".to_string()).unwrap();
+        create_document(&root, None, "Doc B".to_string()).unwrap();
+        fs::write(root.join("normal.md"), "normal").unwrap();
+
+        delete_document(&root, "Doc A").unwrap();
+
+        assert!(!root.join("Doc A").exists());
+        assert!(root.join("Doc B").join(MANIFEST_FILE).exists());
+        assert!(root.join("normal.md").exists());
     }
 
     #[test]

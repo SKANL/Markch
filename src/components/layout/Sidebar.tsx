@@ -26,6 +26,7 @@ import {
 import { mod, shift, isMac } from "../../lib/platform";
 import * as notesService from "../../services/notes";
 import { FolderNameDialog } from "../notes/FolderNameDialog";
+import { resolveNormalCreationParent } from "../../lib/documentCreation";
 
 interface SidebarProps {
   onOpenSettings?: () => void;
@@ -280,19 +281,15 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
     clearSearch();
   }, [clearSearch]);
 
-  const handleNewFolder = useCallback(() => {
-    const lastSlash = selectedNoteId?.lastIndexOf("/") ?? -1;
-    setFolderDialogParent(
-      lastSlash > 0 ? selectedNoteId!.substring(0, lastSlash) : "",
-    );
+  const handleNewFolder = useCallback(async () => {
+    const parent = await resolveNormalCreationParent(selectedNoteId);
+    setFolderDialogParent(parent ?? "");
     setFolderDialogOpen(true);
   }, [selectedNoteId]);
 
-  const handleNewDocument = useCallback(() => {
-    const lastSlash = selectedNoteId?.lastIndexOf("/") ?? -1;
-    setDocumentDialogParent(
-      lastSlash > 0 ? selectedNoteId!.substring(0, lastSlash) : "",
-    );
+  const handleNewDocument = useCallback(async () => {
+    const parent = await resolveNormalCreationParent(selectedNoteId);
+    setDocumentDialogParent(parent ?? "");
     setDocumentDialogOpen(true);
   }, [selectedNoteId]);
 
@@ -333,18 +330,13 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
   // Listen for create-new-folder event (from command palette / keyboard shortcut)
   useEffect(() => {
     const handleCreateFolder = () => {
-      // Derive parent folder from currently selected note
-      const lastSlash = selectedNoteId?.lastIndexOf("/") ?? -1;
-      setFolderDialogParent(
-        lastSlash > 0 ? selectedNoteId!.substring(0, lastSlash) : "",
-      );
-      setFolderDialogOpen(true);
+      void handleNewFolder();
     };
 
     window.addEventListener("create-new-folder", handleCreateFolder);
     return () =>
       window.removeEventListener("create-new-folder", handleCreateFolder);
-  }, [selectedNoteId]);
+  }, [handleNewFolder]);
 
   return (
     <DndContext

@@ -295,7 +295,10 @@ const DocumentItem = memo(function DocumentItem({
   onOpenDocument,
 }: DocumentItemProps) {
   const isFocused = focusedItemKey === `document:${document.path}`;
-  const { selectedNoteId, selectNote, refreshNotes } = useNotes();
+  const { selectedNoteId, selectNote, refreshNotes, deleteDocument } = useNotes();
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [isDeletingDocument, setIsDeletingDocument] = useState(false);
 
   const handleCreatePage = useCallback(async () => {
     try {
@@ -382,6 +385,48 @@ const DocumentItem = memo(function DocumentItem({
     }
   }, [document.path]);
 
+  const handleRenameDocument = useCallback(
+    async (newName: string) => {
+      try {
+        const selectedPageIndex = selectedNoteId?.startsWith(`${document.path}/`)
+          ? (await notesService.readDocument(document.path)).pages.findIndex(
+              (page) => page.id === selectedNoteId,
+            )
+          : -1;
+        const detail = await notesService.renameDocument(document.path, newName);
+        await refreshNotes();
+        setRenameDialogOpen(false);
+        if (selectedPageIndex >= 0) {
+          const nextPage =
+            detail.pages[selectedPageIndex] ?? detail.pages[detail.pages.length - 1];
+          if (nextPage) {
+            await selectNote(nextPage.id);
+          }
+        }
+        toast.success("Document renamed");
+      } catch (error) {
+        console.error("Failed to rename Document:", error);
+        toast.error("Failed to rename Document");
+      }
+    },
+    [document.path, refreshNotes, selectNote, selectedNoteId],
+  );
+
+  const handleDeleteDocument = useCallback(async () => {
+    if (isDeletingDocument) return;
+    setIsDeletingDocument(true);
+    try {
+      await deleteDocument(document.path);
+      setDeleteDialogOpen(false);
+      toast.success("Document deleted");
+    } catch (error) {
+      console.error("Failed to delete Document:", error);
+      toast.error("Failed to delete Document");
+    } finally {
+      setIsDeletingDocument(false);
+    }
+  }, [deleteDocument, document.path, isDeletingDocument]);
+
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>
@@ -421,6 +466,13 @@ const DocumentItem = memo(function DocumentItem({
             <AddNoteIcon className="w-4 h-4 stroke-[1.6]" />
             New Page
           </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={() => setRenameDialogOpen(true)}
+          >
+            <PencilIcon className="w-4 h-4 stroke-[1.6]" />
+            Rename Document
+          </ContextMenu.Item>
           <ContextMenu.Separator className={menuSeparatorClass} />
           <ContextMenu.Item
             className={menuItemClass}
@@ -455,8 +507,53 @@ const DocumentItem = memo(function DocumentItem({
             <FolderIcon className="w-4 h-4 stroke-[1.6]" />
             Open Document Folder
           </ContextMenu.Item>
+          <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Item
+            className={
+              menuItemClass +
+              " text-red-500 hover:text-red-500 focus:text-red-500"
+            }
+            onSelect={() => setDeleteDialogOpen(true)}
+          >
+            <TrashIcon className="w-4 h-4 stroke-[1.6]" />
+            Delete Document
+          </ContextMenu.Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>
+      <FolderNameDialog
+        open={renameDialogOpen}
+        onOpenChange={setRenameDialogOpen}
+        onConfirm={handleRenameDocument}
+        title="Rename Document"
+        description="Enter a new name for the Document"
+        confirmLabel="Rename"
+        defaultValue={document.title}
+      />
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Document?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete "{cleanTitle(document.title)}" and
+              all of its Markdown pages. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingDocument}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeletingDocument}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteDocument();
+              }}
+            >
+              {isDeletingDocument ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ContextMenu.Root>
   );
 });
@@ -1173,8 +1270,8 @@ export function FolderTreeView({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete folder?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the folder and all notes inside it.
-              This action cannot be undone.
+              This will permanently delete the folder and all notes, subfolders,
+              and Markch Documents inside it. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

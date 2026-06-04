@@ -1862,6 +1862,97 @@ async fn read_document(
 }
 
 #[tauri::command]
+async fn rename_document(
+    document_path: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let old_path = document_path.trim_matches('/').replace('\\', "/");
+    let old_prefix = format!("{}/", old_path);
+    let detail = document::rename_document(&folder_path, &document_path, new_name, word_limit)?;
+    let new_prefix = format!("{}/", detail.path);
+
+    {
+        let mut settings = state.settings.write().expect("settings write lock");
+        if let Some(ref mut pinned) = settings.pinned_note_ids {
+            for id in pinned.iter_mut() {
+                if id.starts_with(&old_prefix) {
+                    *id = format!("{}{}", new_prefix, &id[old_prefix.len()..]);
+                }
+            }
+        }
+        let folder = folder_path.to_string_lossy().into_owned();
+        let _ = save_settings(&folder, &settings);
+    }
+
+    {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        let updates: Vec<(String, String)> = cache
+            .keys()
+            .filter(|id| id.starts_with(&old_prefix))
+            .map(|id| {
+                let new_id = format!("{}{}", new_prefix, &id[old_prefix.len()..]);
+                (id.clone(), new_id)
+            })
+            .collect();
+        for (old_id, new_id) in updates {
+            if let Some(mut meta) = cache.remove(&old_id) {
+                meta.id = new_id.clone();
+                cache.insert(new_id, meta);
+            }
+        }
+    }
+
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+
+    Ok(detail)
+}
+
+#[tauri::command]
+async fn delete_document(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    let old_path = document_path.trim_matches('/').replace('\\', "/");
+    let old_prefix = format!("{}/", old_path);
+    document::delete_document(&folder_path, &document_path)?;
+
+    {
+        let mut settings = state.settings.write().expect("settings write lock");
+        if let Some(ref mut pinned) = settings.pinned_note_ids {
+            pinned.retain(|id| !id.starts_with(&old_prefix));
+        }
+        let folder = folder_path.to_string_lossy().into_owned();
+        let _ = save_settings(&folder, &settings);
+    }
+
+    {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        cache.retain(|id, _| !id.starts_with(&old_prefix));
+    }
+
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn read_document_markdown(
     document_path: String,
     state: State<'_, AppState>,
@@ -4081,6 +4172,8 @@ pub fn run() {
             create_document,
             list_documents,
             read_document,
+            rename_document,
+            delete_document,
             read_document_markdown,
             read_document_edit_markdown,
             save_document_markdown,

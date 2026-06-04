@@ -75,6 +75,17 @@ export async function readDocument(documentPath: string): Promise<DocumentDetail
   return invoke("read_document", { documentPath });
 }
 
+export async function renameDocument(
+  documentPath: string,
+  newName: string,
+): Promise<DocumentDetail> {
+  return invoke("rename_document", { documentPath, newName });
+}
+
+export async function deleteDocument(documentPath: string): Promise<void> {
+  return invoke("delete_document", { documentPath });
+}
+
 export async function readDocumentMarkdown(documentPath: string): Promise<string> {
   return invoke("read_document_markdown", { documentPath });
 }
