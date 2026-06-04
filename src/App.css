@@ -310,6 +310,29 @@ html.dark {
   margin-right: auto;
 }
 
+.markch-document-editor {
+  padding: 2rem 1.5rem 5rem;
+}
+
+.markch-document-editor .ProseMirror {
+  width: 794px;
+  min-height: 1123px;
+  max-width: none !important;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 72px 80px 96px !important;
+  background: var(--color-bg);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, var(--color-text));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.16);
+  transform-origin: top center;
+  zoom: var(--document-page-zoom, 1);
+}
+
+.markch-document-overflow .ProseMirror {
+  outline: 2px solid color-mix(in srgb, #f59e0b 75%, transparent);
+  outline-offset: 3px;
+}
+
 /* Editor font customization - simplified */
 .prose {
   font-family: var(--editor-font-family);

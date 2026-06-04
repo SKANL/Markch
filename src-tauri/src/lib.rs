@@ -17,6 +17,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 mod git;
+mod document;
 
 // Note metadata for list display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +127,12 @@ pub struct Settings {
     pub ollama_model: Option<String>,
     #[serde(rename = "foldersEnabled")]
     pub folders_enabled: Option<bool>,
+    #[serde(rename = "documentsEnabled")]
+    pub documents_enabled: Option<bool>,
+    #[serde(rename = "documentPageWordLimit")]
+    pub document_page_word_limit: Option<usize>,
+    #[serde(rename = "documentPageZoom")]
+    pub document_page_zoom: Option<f32>,
     #[serde(rename = "ignoredPatterns")]
     pub ignored_patterns: Option<Vec<String>>,
     #[serde(rename = "customColorsLight")]
@@ -353,7 +360,7 @@ impl Default for AppState {
 }
 
 // Utility: Sanitize filename from title
-fn sanitize_filename(title: &str) -> String {
+pub(crate) fn sanitize_filename(title: &str) -> String {
     let sanitized: String = title
         .chars()
         .filter(|c| *c != '\u{00A0}' && *c != '\u{FEFF}')
@@ -466,7 +473,7 @@ fn strip_frontmatter(content: &str) -> &str {
 }
 
 // Utility: Extract title from markdown content
-fn extract_title(content: &str) -> String {
+pub(crate) fn extract_title(content: &str) -> String {
     let body = strip_frontmatter(content);
     for line in body.lines() {
         let trimmed = line.trim();
@@ -484,7 +491,7 @@ fn extract_title(content: &str) -> String {
 }
 
 // Utility: Generate preview from content (strip markdown formatting)
-fn generate_preview(content: &str) -> String {
+pub(crate) fn generate_preview(content: &str) -> String {
     let body = strip_frontmatter(content);
     // Skip the first line (title), find first non-empty line
     for line in body.lines().skip(1) {
@@ -628,8 +635,12 @@ fn get_effective_ignored_dirs(settings: &Settings) -> Vec<String> {
     })
 }
 
+fn get_document_page_word_limit(settings: &Settings) -> usize {
+    settings.document_page_word_limit.unwrap_or(800).clamp(250, 2000)
+}
+
 /// Filter for WalkDir: skips excluded and user-ignored directories.
-fn is_visible_notes_entry(entry: &walkdir::DirEntry, ignored_dirs: &[String]) -> bool {
+pub(crate) fn is_visible_notes_entry(entry: &walkdir::DirEntry, ignored_dirs: &[String]) -> bool {
     if entry.file_type().is_dir() {
         let name = entry.file_name().to_str().unwrap_or("");
         return !EXCLUDED_DIRS.contains(&name) && !ignored_dirs.iter().any(|d| d == name);
@@ -639,7 +650,7 @@ fn is_visible_notes_entry(entry: &walkdir::DirEntry, ignored_dirs: &[String]) ->
 
 /// Convert an absolute file path to a note ID (relative path from notes root, no .md extension, POSIX separators).
 /// Returns None if the path is outside the root, not a .md file, or in an excluded/ignored directory.
-fn id_from_abs_path(notes_root: &Path, file_path: &Path, ignored_dirs: &[String]) -> Option<String> {
+pub(crate) fn id_from_abs_path(notes_root: &Path, file_path: &Path, ignored_dirs: &[String]) -> Option<String> {
     let rel = file_path.strip_prefix(notes_root).ok()?;
 
     // Skip files inside excluded or ignored directories.
@@ -672,7 +683,7 @@ fn id_from_abs_path(notes_root: &Path, file_path: &Path, ignored_dirs: &[String]
 }
 
 /// Convert a note ID to an absolute file path. Validates against path traversal.
-fn abs_path_from_id(notes_root: &Path, id: &str) -> Result<PathBuf, String> {
+pub(crate) fn abs_path_from_id(notes_root: &Path, id: &str) -> Result<PathBuf, String> {
     if id.contains('\\') {
         return Err("Invalid note ID: backslashes not allowed".to_string());
     }
@@ -900,9 +911,12 @@ async fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteMetadata>, Str
         return Ok(vec![]);
     }
 
-    let ignored_dirs = {
+    let (ignored_dirs, documents_enabled) = {
         let settings = state.settings.read().expect("settings read lock");
-        get_effective_ignored_dirs(&settings)
+        (
+            get_effective_ignored_dirs(&settings),
+            settings.documents_enabled == Some(true),
+        )
     };
 
     let path_clone = path.clone();
@@ -920,6 +934,9 @@ async fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteMetadata>, Str
                 continue;
             }
             if let Some(id) = id_from_abs_path(&path_clone, file_path, &ignored_dirs) {
+                if documents_enabled && document::is_note_in_document(&path_clone, &id) {
+                    continue;
+                }
                 if let Ok(content) = std::fs::read_to_string(file_path) {
                     let modified = entry
                         .metadata()
@@ -1042,8 +1059,16 @@ async fn save_note(
 
     // Determine the file ID and path, handling renames
     let (final_id, file_path, old_id) = if let Some(existing_id) = id {
-        // Preserve directory prefix for notes in subfolders
-        let (dir_prefix, desired_id) = if let Some(pos) = existing_id.rfind('/') {
+        let document_desired_id =
+            document::desired_page_id_for_save(&folder_path, &existing_id, &title)?;
+        // Preserve directory prefix for notes in subfolders. Document pages keep
+        // their numeric page prefix so the manifest order remains stable.
+        let (dir_prefix, desired_id) = if let Some(desired_id) = document_desired_id {
+            let dir_prefix = desired_id
+                .rfind('/')
+                .map(|pos| desired_id[..pos].to_string());
+            (dir_prefix, desired_id)
+        } else if let Some(pos) = existing_id.rfind('/') {
             let prefix = &existing_id[..pos];
             (Some(prefix.to_string()), format!("{}/{}", prefix, sanitized_leaf))
         } else {
@@ -1130,12 +1155,63 @@ async fn save_note(
         cache.remove(old_id_str);
     }
 
+    let old_id_for_document = old_id.as_ref().map(|(old_id_str, _)| old_id_str.as_str());
+    document::sync_page_after_save(&folder_path, old_id_for_document, &final_id, &title)?;
+
+    let (documents_enabled, word_limit) = {
+        let settings = state.settings.read().expect("settings read lock");
+        (
+            settings.documents_enabled == Some(true),
+            get_document_page_word_limit(&settings),
+        )
+    };
+
+    let normalized_document = if documents_enabled && document::is_note_in_document(&folder_path, &final_id) {
+        document::normalize_document_for_note_id(&folder_path, &final_id, word_limit)?
+    } else {
+        None
+    };
+
+    if normalized_document.is_some() {
+        let ignored_dirs = {
+            let settings = state.settings.read().expect("settings read lock");
+            get_effective_ignored_dirs(&settings)
+        };
+        let index = state.search_index.lock().expect("search index mutex");
+        if let Some(ref search_index) = *index {
+            let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+        }
+    }
+
+    let response_id = normalized_document
+        .as_ref()
+        .and_then(|result| result.target_note_id.clone())
+        .unwrap_or_else(|| final_id.clone());
+    let response_file_path = abs_path_from_id(&folder_path, &response_id)?;
+    if response_id != final_id {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        cache.remove(&final_id);
+    }
+
+    let final_content = fs::read_to_string(&response_file_path)
+        .await
+        .unwrap_or_else(|_| content.clone());
+    let final_metadata = fs::metadata(&response_file_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let final_modified = final_metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(modified);
+
     Ok(Note {
-        id: final_id,
-        title,
-        content,
-        path: file_path.to_string_lossy().into_owned(),
-        modified,
+        id: response_id,
+        title: extract_title(&final_content),
+        content: final_content,
+        path: response_file_path.to_string_lossy().into_owned(),
+        modified: final_modified,
     })
 }
 
@@ -1736,6 +1812,279 @@ async fn move_folder(
     }
 
     Ok(())
+}
+
+fn document_context(state: &State<'_, AppState>) -> Result<(PathBuf, usize), String> {
+    let folder = {
+        let app_config = state.app_config.read().expect("app_config read lock");
+        app_config
+            .notes_folder
+            .clone()
+            .ok_or("Notes folder not set")?
+    };
+    let word_limit = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_document_page_word_limit(&settings)
+    };
+    Ok((PathBuf::from(folder), word_limit))
+}
+
+#[tauri::command]
+async fn create_document(
+    parent_path: Option<String>,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    let detail = document::create_document(&folder_path, parent_path, title)?;
+    Ok(detail)
+}
+
+#[tauri::command]
+async fn list_documents(
+    state: State<'_, AppState>,
+) -> Result<Vec<document::DocumentMetadata>, String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    document::list_documents(&folder_path, &ignored_dirs)
+}
+
+#[tauri::command]
+async fn read_document(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    document::read_document(&folder_path, &document_path, word_limit)
+}
+
+#[tauri::command]
+async fn rename_document(
+    document_path: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let old_path = document_path.trim_matches('/').replace('\\', "/");
+    let old_prefix = format!("{}/", old_path);
+    let detail = document::rename_document(&folder_path, &document_path, new_name, word_limit)?;
+    let new_prefix = format!("{}/", detail.path);
+
+    {
+        let mut settings = state.settings.write().expect("settings write lock");
+        if let Some(ref mut pinned) = settings.pinned_note_ids {
+            for id in pinned.iter_mut() {
+                if id.starts_with(&old_prefix) {
+                    *id = format!("{}{}", new_prefix, &id[old_prefix.len()..]);
+                }
+            }
+        }
+        let folder = folder_path.to_string_lossy().into_owned();
+        let _ = save_settings(&folder, &settings);
+    }
+
+    {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        let updates: Vec<(String, String)> = cache
+            .keys()
+            .filter(|id| id.starts_with(&old_prefix))
+            .map(|id| {
+                let new_id = format!("{}{}", new_prefix, &id[old_prefix.len()..]);
+                (id.clone(), new_id)
+            })
+            .collect();
+        for (old_id, new_id) in updates {
+            if let Some(mut meta) = cache.remove(&old_id) {
+                meta.id = new_id.clone();
+                cache.insert(new_id, meta);
+            }
+        }
+    }
+
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+
+    Ok(detail)
+}
+
+#[tauri::command]
+async fn delete_document(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    let old_path = document_path.trim_matches('/').replace('\\', "/");
+    let old_prefix = format!("{}/", old_path);
+    document::delete_document(&folder_path, &document_path)?;
+
+    {
+        let mut settings = state.settings.write().expect("settings write lock");
+        if let Some(ref mut pinned) = settings.pinned_note_ids {
+            pinned.retain(|id| !id.starts_with(&old_prefix));
+        }
+        let folder = folder_path.to_string_lossy().into_owned();
+        let _ = save_settings(&folder, &settings);
+    }
+
+    {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        cache.retain(|id, _| !id.starts_with(&old_prefix));
+    }
+
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn read_document_markdown(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    document::read_document_markdown(&folder_path, &document_path)
+}
+
+#[tauri::command]
+async fn read_document_edit_markdown(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let (folder_path, _word_limit) = document_context(&state)?;
+    document::read_document_edit_markdown(&folder_path, &document_path)
+}
+
+#[tauri::command]
+async fn save_document_markdown(
+    document_path: String,
+    markdown: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let detail = document::save_document_markdown(&folder_path, &document_path, &markdown, word_limit)?;
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+    Ok(detail)
+}
+
+#[tauri::command]
+async fn read_document_for_note(
+    note_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<document::DocumentDetail>, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    document::read_document_for_note(&folder_path, &note_id, word_limit)
+}
+
+#[tauri::command]
+async fn create_document_page(
+    document_path: String,
+    title: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    document::create_document_page(&folder_path, &document_path, title)?;
+    document::read_document(&folder_path, &document_path, word_limit)
+}
+
+#[tauri::command]
+async fn rename_document_page(
+    document_path: String,
+    page_file: String,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    document::rename_document_page(&folder_path, &document_path, &page_file, title)?;
+    document::read_document(&folder_path, &document_path, word_limit)
+}
+
+#[tauri::command]
+async fn delete_document_page(
+    document_path: String,
+    page_file: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    document::delete_document_page(&folder_path, &document_path, &page_file)?;
+    document::read_document(&folder_path, &document_path, word_limit)
+}
+
+#[tauri::command]
+async fn move_document_page(
+    document_path: String,
+    page_file: String,
+    direction: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentDetail, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let direction = match direction.as_str() {
+        "up" => document::MoveDirection::Up,
+        "down" => document::MoveDirection::Down,
+        _ => return Err("Invalid page move direction".to_string()),
+    };
+    document::move_document_page(&folder_path, &document_path, &page_file, direction)?;
+    document::read_document(&folder_path, &document_path, word_limit)
+}
+
+#[tauri::command]
+async fn normalize_document_for_note(
+    note_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<document::DocumentNormalizeResult>, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let result = document::normalize_document_for_note_id(&folder_path, &note_id, word_limit)?;
+    if result.is_some() {
+        let ignored_dirs = {
+            let settings = state.settings.read().expect("settings read lock");
+            get_effective_ignored_dirs(&settings)
+        };
+        let index = state.search_index.lock().expect("search index mutex");
+        if let Some(ref search_index) = *index {
+            let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn normalize_document(
+    document_path: String,
+    state: State<'_, AppState>,
+) -> Result<document::DocumentNormalizeResult, String> {
+    let (folder_path, word_limit) = document_context(&state)?;
+    let result = document::normalize_document(&folder_path, &document_path, word_limit)?;
+    let ignored_dirs = {
+        let settings = state.settings.read().expect("settings read lock");
+        get_effective_ignored_dirs(&settings)
+    };
+    let index = state.search_index.lock().expect("search index mutex");
+    if let Some(ref search_index) = *index {
+        let _ = search_index.rebuild_index(&folder_path, &ignored_dirs);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -3820,6 +4169,21 @@ pub fn run() {
             rename_folder,
             move_note,
             move_folder,
+            create_document,
+            list_documents,
+            read_document,
+            rename_document,
+            delete_document,
+            read_document_markdown,
+            read_document_edit_markdown,
+            save_document_markdown,
+            read_document_for_note,
+            create_document_page,
+            rename_document_page,
+            delete_document_page,
+            move_document_page,
+            normalize_document_for_note,
+            normalize_document,
             get_settings,
             update_settings,
             update_git_enabled,

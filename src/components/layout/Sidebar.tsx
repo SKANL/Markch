@@ -26,6 +26,7 @@ import {
 import { mod, shift, isMac } from "../../lib/platform";
 import * as notesService from "../../services/notes";
 import { FolderNameDialog } from "../notes/FolderNameDialog";
+import { resolveNormalCreationParent } from "../../lib/documentCreation";
 
 interface SidebarProps {
   onOpenSettings?: () => void;
@@ -40,6 +41,8 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
     searchQuery,
     clearSearch,
     selectedNoteId,
+    selectNote,
+    refreshNotes,
     moveNote,
     moveFolder,
   } = useNotes();
@@ -49,6 +52,9 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderDialogParent, setFolderDialogParent] = useState("");
   const [foldersEnabled, setFoldersEnabled] = useState(true);
+  const [documentsEnabled, setDocumentsEnabled] = useState(false);
+  const [documentDialogOpen, setDocumentDialogOpen] = useState(false);
+  const [documentDialogParent, setDocumentDialogParent] = useState("");
   const [dragLabel, setDragLabel] = useState<string | null>(null);
   const [dragCount, setDragCount] = useState(1);
   const [multiSelectedNoteIds, setMultiSelectedNoteIds] = useState<Set<string>>(new Set());
@@ -165,14 +171,23 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
     [moveNote, moveFolder],
   );
 
-  // Load folders setting
+  // Load folder/document settings
   useEffect(() => {
-    notesService.getSettings().then((s) => {
-      setFoldersEnabled(s.foldersEnabled === true);
-    }).catch((error) => {
-      console.error("Failed to load settings:", error);
-      setFoldersEnabled(false);
-    });
+    const loadSettings = () => {
+      notesService.getSettings().then((s) => {
+        setFoldersEnabled(s.foldersEnabled === true);
+        setDocumentsEnabled(s.documentsEnabled === true);
+      }).catch((error) => {
+        console.error("Failed to load settings:", error);
+        setFoldersEnabled(false);
+        setDocumentsEnabled(false);
+      });
+    };
+    loadSettings();
+    window.addEventListener("markch-settings-updated", loadSettings);
+    return () => {
+      window.removeEventListener("markch-settings-updated", loadSettings);
+    };
   }, []);
 
   // Sync input with search query
@@ -266,12 +281,16 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
     clearSearch();
   }, [clearSearch]);
 
-  const handleNewFolder = useCallback(() => {
-    const lastSlash = selectedNoteId?.lastIndexOf("/") ?? -1;
-    setFolderDialogParent(
-      lastSlash > 0 ? selectedNoteId!.substring(0, lastSlash) : "",
-    );
+  const handleNewFolder = useCallback(async () => {
+    const parent = await resolveNormalCreationParent(selectedNoteId);
+    setFolderDialogParent(parent ?? "");
     setFolderDialogOpen(true);
+  }, [selectedNoteId]);
+
+  const handleNewDocument = useCallback(async () => {
+    const parent = await resolveNormalCreationParent(selectedNoteId);
+    setDocumentDialogParent(parent ?? "");
+    setDocumentDialogOpen(true);
   }, [selectedNoteId]);
 
   const handleFolderDialogConfirm = useCallback(
@@ -287,21 +306,37 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
     [createFolder, folderDialogParent],
   );
 
+  const handleDocumentDialogConfirm = useCallback(
+    async (name: string) => {
+      try {
+        const detail = await notesService.createDocument(
+          documentDialogParent || undefined,
+          name,
+        );
+        setDocumentDialogOpen(false);
+        await refreshNotes();
+        const firstPage = detail.pages[0];
+        if (firstPage) {
+          await selectNote(firstPage.id);
+        }
+      } catch (error) {
+        console.error("Failed to create document:", error);
+        toast.error("Failed to create document");
+      }
+    },
+    [documentDialogParent, refreshNotes, selectNote],
+  );
+
   // Listen for create-new-folder event (from command palette / keyboard shortcut)
   useEffect(() => {
     const handleCreateFolder = () => {
-      // Derive parent folder from currently selected note
-      const lastSlash = selectedNoteId?.lastIndexOf("/") ?? -1;
-      setFolderDialogParent(
-        lastSlash > 0 ? selectedNoteId!.substring(0, lastSlash) : "",
-      );
-      setFolderDialogOpen(true);
+      void handleNewFolder();
     };
 
     window.addEventListener("create-new-folder", handleCreateFolder);
     return () =>
       window.removeEventListener("create-new-folder", handleCreateFolder);
-  }, [selectedNoteId]);
+  }, [handleNewFolder]);
 
   return (
     <DndContext
@@ -369,6 +404,15 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
                     <FolderPlusIcon className="w-4 h-4 stroke-[1.6]" />
                     New Folder
                   </DropdownMenu.Item>
+                  {documentsEnabled && (
+                    <DropdownMenu.Item
+                      className="px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2"
+                      onSelect={handleNewDocument}
+                    >
+                      <NoteIcon className="w-4 h-4 stroke-[1.6]" />
+                      New Document
+                    </DropdownMenu.Item>
+                  )}
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
@@ -430,6 +474,14 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
         onConfirm={handleFolderDialogConfirm}
         title="Create new folder"
         description="Enter a name for your new folder"
+        confirmLabel="Create"
+      />
+      <FolderNameDialog
+        open={documentDialogOpen}
+        onOpenChange={setDocumentDialogOpen}
+        onConfirm={handleDocumentDialogConfirm}
+        title="Create new Document"
+        description="Enter a name for your Document"
         confirmLabel="Create"
       />
     </div>

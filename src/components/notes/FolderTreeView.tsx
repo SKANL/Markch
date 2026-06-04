@@ -33,9 +33,18 @@ import {
   PinIcon,
   CopyIcon,
   ArrowUpIcon,
+  DownloadIcon,
+  FolderIcon,
+  RefreshCwIcon,
 } from "../icons";
 import * as notesService from "../../services/notes";
-import type { FolderNode, NoteMetadata, Settings } from "../../types/note";
+import { downloadMarkdown } from "../../services/pdf";
+import type {
+  DocumentMetadata,
+  FolderNode,
+  NoteMetadata,
+  Settings,
+} from "../../types/note";
 
 const STORAGE_KEY = "markch:collapsedFolders";
 
@@ -267,7 +276,287 @@ interface FolderItemProps {
   onDeleteNote: (id: string) => void;
   onMoveNoteToParent: (id: string, targetFolder: string) => void;
   onMoveFolderToParent: (path: string, targetParent: string) => void;
+  onOpenDocument: (documentPath: string) => void;
 }
+
+interface DocumentItemProps {
+  document: DocumentMetadata;
+  depth: number;
+  isSelected: boolean;
+  focusedItemKey: string | null;
+  onOpenDocument: (documentPath: string) => void;
+}
+
+const DocumentItem = memo(function DocumentItem({
+  document,
+  depth,
+  isSelected,
+  focusedItemKey,
+  onOpenDocument,
+}: DocumentItemProps) {
+  const isFocused = focusedItemKey === `document:${document.path}`;
+  const { selectedNoteId, selectNote, refreshNotes, deleteDocument } = useNotes();
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [isDeletingDocument, setIsDeletingDocument] = useState(false);
+
+  const handleCreatePage = useCallback(async () => {
+    try {
+      const detail = await notesService.createDocumentPage(document.path);
+      await refreshNotes();
+      const created = detail.pages[detail.pages.length - 1];
+      if (created) {
+        await selectNote(created.id);
+      }
+    } catch (error) {
+      console.error("Failed to create Document page:", error);
+      toast.error("Failed to create page");
+    }
+  }, [document.path, refreshNotes, selectNote]);
+
+  const handleCopyFullMarkdown = useCallback(async () => {
+    try {
+      const markdown = await notesService.readDocumentMarkdown(document.path);
+      await invoke("copy_to_clipboard", { text: markdown });
+      toast.success("Copied full Document Markdown");
+    } catch (error) {
+      console.error("Failed to copy full Document Markdown:", error);
+      toast.error("Failed to copy full Document");
+    }
+  }, [document.path]);
+
+  const handleExportFullMarkdown = useCallback(async () => {
+    try {
+      const markdown = await notesService.readDocumentMarkdown(document.path);
+      const saved = await downloadMarkdown(markdown, document.title);
+      if (saved) {
+        toast.success("Full Document Markdown saved successfully");
+      }
+    } catch (error) {
+      console.error("Failed to export full Document Markdown:", error);
+      toast.error("Failed to export full Document");
+    }
+  }, [document.path, document.title]);
+
+  const handleNormalizeDocument = useCallback(async () => {
+    try {
+      if (selectedNoteId?.startsWith(`${document.path}/`)) {
+        window.dispatchEvent(
+          new CustomEvent("normalize-document", { detail: document.path }),
+        );
+        return;
+      }
+      const result = await notesService.normalizeDocument(document.path);
+      const next = result.document;
+      await refreshNotes();
+      toast.success(
+        result.changed
+          ? `Document normalized: ${next.pages.length} ${
+              next.pages.length === 1 ? "page" : "pages"
+            }`
+          : "Document already normalized",
+      );
+    } catch (error) {
+      console.error("Failed to normalize Document:", error);
+      toast.error("Failed to normalize Document");
+    }
+  }, [document.path, refreshNotes, selectedNoteId]);
+
+  const handleCopyFolderPath = useCallback(async () => {
+    try {
+      const folder = await notesService.getNotesFolder();
+      if (!folder) return;
+      await invoke("copy_to_clipboard", { text: `${folder}/${document.path}` });
+      toast.success("Document folder path copied");
+    } catch (error) {
+      console.error("Failed to copy Document folder path:", error);
+      toast.error("Failed to copy folder path");
+    }
+  }, [document.path]);
+
+  const handleOpenFolder = useCallback(async () => {
+    try {
+      const folder = await notesService.getNotesFolder();
+      if (!folder) return;
+      await invoke("open_in_file_manager", { path: `${folder}/${document.path}` });
+    } catch (error) {
+      console.error("Failed to open Document folder:", error);
+      toast.error("Failed to open Document folder");
+    }
+  }, [document.path]);
+
+  const handleRenameDocument = useCallback(
+    async (newName: string) => {
+      try {
+        const selectedPageIndex = selectedNoteId?.startsWith(`${document.path}/`)
+          ? (await notesService.readDocument(document.path)).pages.findIndex(
+              (page) => page.id === selectedNoteId,
+            )
+          : -1;
+        const detail = await notesService.renameDocument(document.path, newName);
+        await refreshNotes();
+        setRenameDialogOpen(false);
+        if (selectedPageIndex >= 0) {
+          const nextPage =
+            detail.pages[selectedPageIndex] ?? detail.pages[detail.pages.length - 1];
+          if (nextPage) {
+            await selectNote(nextPage.id);
+          }
+        }
+        toast.success("Document renamed");
+      } catch (error) {
+        console.error("Failed to rename Document:", error);
+        toast.error("Failed to rename Document");
+      }
+    },
+    [document.path, refreshNotes, selectNote, selectedNoteId],
+  );
+
+  const handleDeleteDocument = useCallback(async () => {
+    if (isDeletingDocument) return;
+    setIsDeletingDocument(true);
+    try {
+      await deleteDocument(document.path);
+      setDeleteDialogOpen(false);
+      toast.success("Document deleted");
+    } catch (error) {
+      console.error("Failed to delete Document:", error);
+      toast.error("Failed to delete Document");
+    } finally {
+      setIsDeletingDocument(false);
+    }
+  }, [deleteDocument, document.path, isDeletingDocument]);
+
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>
+        <div
+          className={`flex items-center gap-1.5 py-1.5 cursor-pointer rounded-md select-none transition-colors ${
+            isSelected
+              ? "bg-bg-muted group-focus/notelist:ring-1 group-focus/notelist:ring-text-muted"
+              : isFocused
+                ? "bg-bg-muted/50 ring-1 ring-text-muted/30"
+                : "hover:bg-bg-muted"
+          }`}
+          style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
+          onClick={() => onOpenDocument(document.path)}
+          role="button"
+          tabIndex={-1}
+          title={`${document.title} Document`}
+        >
+          <NoteIcon className="w-4 h-4 stroke-[1.6] opacity-70 shrink-0" />
+          <span className="text-sm text-text truncate">
+            {cleanTitle(document.title)}
+          </span>
+          <span className="ml-auto text-[10px] text-text-muted shrink-0">
+            {document.pageCount}
+          </span>
+        </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className="min-w-56 bg-bg border border-border rounded-md shadow-lg py-1 z-50">
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={() => onOpenDocument(document.path)}
+          >
+            <NoteIcon className="w-4 h-4 stroke-[1.6]" />
+            Open
+          </ContextMenu.Item>
+          <ContextMenu.Item className={menuItemClass} onSelect={handleCreatePage}>
+            <AddNoteIcon className="w-4 h-4 stroke-[1.6]" />
+            New Page
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={() => setRenameDialogOpen(true)}
+          >
+            <PencilIcon className="w-4 h-4 stroke-[1.6]" />
+            Rename Document
+          </ContextMenu.Item>
+          <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleCopyFullMarkdown}
+          >
+            <CopyIcon className="w-4 h-4 stroke-[1.6]" />
+            Copy Full Document Markdown
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleExportFullMarkdown}
+          >
+            <DownloadIcon className="w-4 h-4 stroke-[1.6]" />
+            Export Full Document Markdown
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleNormalizeDocument}
+          >
+            <RefreshCwIcon className="w-4 h-4 stroke-[1.6]" />
+            Normalize Document
+          </ContextMenu.Item>
+          <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={handleCopyFolderPath}
+          >
+            <CopyIcon className="w-4 h-4 stroke-[1.6]" />
+            Copy Document Folder Path
+          </ContextMenu.Item>
+          <ContextMenu.Item className={menuItemClass} onSelect={handleOpenFolder}>
+            <FolderIcon className="w-4 h-4 stroke-[1.6]" />
+            Open Document Folder
+          </ContextMenu.Item>
+          <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Item
+            className={
+              menuItemClass +
+              " text-red-500 hover:text-red-500 focus:text-red-500"
+            }
+            onSelect={() => setDeleteDialogOpen(true)}
+          >
+            <TrashIcon className="w-4 h-4 stroke-[1.6]" />
+            Delete Document
+          </ContextMenu.Item>
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+      <FolderNameDialog
+        open={renameDialogOpen}
+        onOpenChange={setRenameDialogOpen}
+        onConfirm={handleRenameDocument}
+        title="Rename Document"
+        description="Enter a new name for the Document"
+        confirmLabel="Rename"
+        defaultValue={document.title}
+      />
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Document?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete "{cleanTitle(document.title)}" and
+              all of its Markdown pages. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingDocument}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeletingDocument}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteDocument();
+              }}
+            >
+              {isDeletingDocument ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </ContextMenu.Root>
+  );
+});
 
 const FolderItemComponent = memo(function FolderItem({
   folder,
@@ -289,6 +578,7 @@ const FolderItemComponent = memo(function FolderItem({
   onDeleteNote,
   onMoveNoteToParent,
   onMoveFolderToParent,
+  onOpenDocument,
 }: FolderItemProps) {
   const isCollapsed = collapsedFolders.has(folder.path);
   const noteCount = countNotesInFolder(folder);
@@ -371,6 +661,19 @@ const FolderItemComponent = memo(function FolderItem({
                   onDeleteNote={onDeleteNote}
                   onMoveNoteToParent={onMoveNoteToParent}
                   onMoveFolderToParent={onMoveFolderToParent}
+                  onOpenDocument={onOpenDocument}
+                />
+              ))}
+              {folder.documents.map((document) => (
+                <DocumentItem
+                  key={document.path}
+                  document={document}
+                  depth={depth + 1}
+                  isSelected={
+                    selectedNoteId?.startsWith(`${document.path}/`) ?? false
+                  }
+                  focusedItemKey={focusedItemKey}
+                  onOpenDocument={onOpenDocument}
                 />
               ))}
               {folder.notes.map((note) => (
@@ -476,6 +779,7 @@ const FolderItemComponent = memo(function FolderItem({
 interface FolderTreeViewProps {
   pinnedIds: Set<string>;
   settings: Settings | null;
+  documents: DocumentMetadata[];
   multiSelectedNoteIds: Set<string>;
   setMultiSelectedNoteIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   lastClickedNoteId: string | null;
@@ -485,6 +789,7 @@ interface FolderTreeViewProps {
 export function FolderTreeView({
   pinnedIds,
   settings: _settings,
+  documents,
   multiSelectedNoteIds,
   setMultiSelectedNoteIds,
   lastClickedNoteId,
@@ -535,8 +840,26 @@ export function FolderTreeView({
   }, [collapsedFolders]);
 
   const tree = useMemo(
-    () => buildFolderTree(notes, pinnedIds, knownFolders),
-    [notes, pinnedIds, knownFolders],
+    () => buildFolderTree(notes, pinnedIds, knownFolders, documents),
+    [notes, pinnedIds, knownFolders, documents],
+  );
+
+  const handleOpenDocument = useCallback(
+    async (documentPath: string) => {
+      try {
+        const detail = await notesService.readDocument(documentPath);
+        const firstPage = detail.pages[0];
+        if (!firstPage) {
+          toast.error("Document has no pages");
+          return;
+        }
+        selectNote(firstPage.id);
+      } catch (error) {
+        console.error("Failed to open Document:", error);
+        toast.error("Failed to open Document");
+      }
+    },
+    [selectNote],
   );
 
   const handleToggleCollapse = useCallback((path: string) => {
@@ -748,7 +1071,11 @@ export function FolderTreeView({
   }, [selectedNoteId]);
 
   const itemKey = (item: TreeItem) =>
-    item.type === "note" ? `note:${item.id}` : `folder:${item.path}`;
+    item.type === "note"
+      ? `note:${item.id}`
+      : item.type === "document"
+        ? `document:${item.path}`
+        : `folder:${item.path}`;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -794,12 +1121,16 @@ export function FolderTreeView({
         setFocusedItemKey(itemKey(item));
         if (item.type === "note") {
           selectNote(item.id);
+        } else if (item.type === "document") {
+          handleOpenDocument(item.path);
         }
       } else if (e.key === "Enter") {
         if (currentIndex < 0) return;
         const item = visibleItems[currentIndex];
         if (item.type === "folder") {
           handleToggleCollapse(item.path);
+        } else if (item.type === "document") {
+          handleOpenDocument(item.path);
         } else {
           // Focus the editor
           const editor = document.querySelector(".ProseMirror") as HTMLElement;
@@ -812,6 +1143,7 @@ export function FolderTreeView({
       focusedItemKey,
       selectNote,
       handleToggleCollapse,
+      handleOpenDocument,
       multiSelectedNoteIds,
       setMultiSelectedNoteIds,
       setLastClickedNoteId,
@@ -897,6 +1229,19 @@ export function FolderTreeView({
             onDeleteNote={openDeleteNoteDialog}
             onMoveNoteToParent={moveNote}
             onMoveFolderToParent={moveFolder}
+            onOpenDocument={handleOpenDocument}
+          />
+        ))}
+
+        {/* Root Documents */}
+        {tree.rootDocuments.map((document) => (
+          <DocumentItem
+            key={document.path}
+            document={document}
+            depth={0}
+            isSelected={selectedNoteId?.startsWith(`${document.path}/`) ?? false}
+            focusedItemKey={focusedItemKey}
+            onOpenDocument={handleOpenDocument}
           />
         ))}
 
@@ -925,8 +1270,8 @@ export function FolderTreeView({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete folder?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the folder and all notes inside it.
-              This action cannot be undone.
+              This will permanently delete the folder and all notes, subfolders,
+              and Markch Documents inside it. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

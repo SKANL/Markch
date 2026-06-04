@@ -21,7 +21,7 @@ import {
   CopyIcon,
   TrashIcon,
 } from "../icons";
-import type { Settings } from "../../types/note";
+import type { DocumentMetadata, Settings } from "../../types/note";
 
 const menuItemClass =
   "px-3 py-1.5 text-sm text-text cursor-pointer outline-none hover:bg-bg-muted focus:bg-bg-muted flex items-center gap-2 rounded-sm";
@@ -255,17 +255,44 @@ export function NoteList({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
+  const [documentsLoading, setDocumentsLoading] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Load settings when notes change
+  const loadSidebarMetadata = useCallback(async (active: () => boolean) => {
+    setDocumentsLoading(true);
+    try {
+      const nextSettings = await notesService.getSettings();
+      if (!active()) return;
+      setSettings(nextSettings);
+      if (
+        nextSettings.foldersEnabled === true &&
+        nextSettings.documentsEnabled === true
+      ) {
+        try {
+          const nextDocuments = await notesService.listDocuments();
+          if (active()) setDocuments(nextDocuments);
+        } catch (error) {
+          console.error("Failed to load documents:", error);
+        }
+      } else {
+        setDocuments([]);
+      }
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    } finally {
+      if (active()) setDocumentsLoading(false);
+    }
+  }, []);
+
+  // Load settings and Documents when notes change
   useEffect(() => {
-    notesService
-      .getSettings()
-      .then(setSettings)
-      .catch((error) => {
-        console.error("Failed to load settings:", error);
-      });
-  }, [notes]);
+    let active = true;
+    void loadSidebarMetadata(() => active);
+    return () => {
+      active = false;
+    };
+  }, [loadSidebarMetadata, notes]);
 
   // Calculate pinned IDs set for efficient lookup
   const pinnedIds = useMemo(
@@ -332,8 +359,11 @@ export function NoteList({
 
   const foldersEnabled = settings?.foldersEnabled === true;
   const isSearching = searchQuery.trim().length > 0;
+  const hasDocuments = foldersEnabled && documents.length > 0;
+  const hasVisibleContent =
+    displayItems.length > 0 || (!isSearching && hasDocuments);
 
-  if (isLoading && notes.length === 0) {
+  if ((isLoading || documentsLoading) && notes.length === 0 && !hasDocuments) {
     return (
       <div className="p-4 text-center text-text-muted select-none">
         Loading...
@@ -349,7 +379,7 @@ export function NoteList({
     );
   }
 
-  if (displayItems.length === 0) {
+  if (!documentsLoading && !hasVisibleContent) {
     return (
       <div className="p-4 text-center text-sm text-text-muted select-none">
         No notes yet
@@ -364,6 +394,7 @@ export function NoteList({
         <FolderTreeView
           pinnedIds={pinnedIds}
           settings={settings}
+          documents={documents}
           multiSelectedNoteIds={multiSelectedNoteIds}
           setMultiSelectedNoteIds={setMultiSelectedNoteIds}
           lastClickedNoteId={lastClickedNoteId}

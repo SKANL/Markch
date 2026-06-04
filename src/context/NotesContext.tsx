@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Note, NoteMetadata } from "../types/note";
 import * as notesService from "../services/notes";
 import type { SearchResult } from "../services/notes";
+import { resolveNormalCreationParent } from "../lib/documentCreation";
 
 // Separate contexts to prevent unnecessary re-renders
 // Data context: changes frequently, only subscribed by components that need the data
@@ -48,6 +49,7 @@ interface NotesActionsContextValue {
   createNoteInFolder: (folderPath: string) => Promise<void>;
   createFolder: (parentPath: string, name: string) => Promise<void>;
   deleteFolder: (path: string) => Promise<void>;
+  deleteDocument: (path: string) => Promise<void>;
   renameFolder: (oldPath: string, newName: string) => Promise<void>;
   moveNote: (id: string, targetFolder: string) => Promise<void>;
   moveFolder: (path: string, targetParent: string) => Promise<void>;
@@ -149,14 +151,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
 
   const createNote = useCallback(async () => {
     try {
-      // Derive target folder from the selected note's parent path
-      let targetFolder: string | undefined;
-      if (selectedNoteIdRef.current) {
-        const lastSlash = selectedNoteIdRef.current.lastIndexOf("/");
-        if (lastSlash > 0) {
-          targetFolder = selectedNoteIdRef.current.substring(0, lastSlash);
-        }
-      }
+      const targetFolder = await resolveNormalCreationParent(
+        selectedNoteIdRef.current,
+      );
       const note = await notesService.createNote(targetFolder);
       selectRequestIdRef.current += 1;
       pendingNewNoteIdRef.current = note.id;
@@ -398,6 +395,27 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to delete folder"
+        );
+      }
+    },
+    [refreshNotes]
+  );
+
+  const deleteDocumentAction = useCallback(
+    async (path: string) => {
+      try {
+        await notesService.deleteDocument(path);
+        setSelectedNoteId((prevId) => {
+          if (prevId && prevId.startsWith(`${path}/`)) {
+            setCurrentNote(null);
+            return null;
+          }
+          return prevId;
+        });
+        await refreshNotes();
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to delete Document"
         );
       }
     },
@@ -730,6 +748,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createNoteInFolder,
       createFolder: createFolderAction,
       deleteFolder: deleteFolderAction,
+      deleteDocument: deleteDocumentAction,
       renameFolder: renameFolderAction,
       moveNote: moveNoteAction,
       moveFolder: moveFolderAction,
@@ -752,6 +771,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createNoteInFolder,
       createFolderAction,
       deleteFolderAction,
+      deleteDocumentAction,
       renameFolderAction,
       moveNoteAction,
       moveFolderAction,

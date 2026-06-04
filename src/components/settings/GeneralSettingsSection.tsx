@@ -4,8 +4,7 @@ import { toast } from "sonner";
 import { useNotes } from "../../context/NotesContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useGit } from "../../context/GitContext";
-import { Button } from "../ui";
-import { Input } from "../ui";
+import { Button, IconButton, Input } from "../ui";
 import {
   FolderIcon,
   FoldersIcon,
@@ -14,6 +13,8 @@ import {
   CloudPlusIcon,
   ChevronRightIcon,
   XIcon,
+  MinusIcon,
+  PlusIcon,
 } from "../icons";
 import type { Settings } from "../../types/note";
 
@@ -289,17 +290,20 @@ export function GeneralSettingsSection() {
 
       {/* Folders Section */}
       <section className="pb-2">
-        <div className="flex items-center justify-between gap-6">
-          <div className="flex flex-col gap-0.75">
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-medium">Enable Folders</h2>
+        <div className="space-y-5">
+          <div className="flex items-center justify-between gap-6">
+            <div className="flex flex-col gap-0.75">
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-medium">Enable Folders</h2>
+              </div>
+              <p className="text-sm text-text-muted max-w-lg">
+                Create and view nested folders to organize your notes. When off,
+                notes are shown in a flat list sorted by date.
+              </p>
             </div>
-            <p className="text-sm text-text-muted max-w-lg">
-              Create and view nested folders to organize your notes. When off,
-              notes are shown in a flat list sorted by date.
-            </p>
+            <FoldersToggle />
           </div>
-          <FoldersToggle />
+          <DocumentsSettings />
         </div>
       </section>
 
@@ -773,6 +777,7 @@ function FoldersToggle() {
         newSettings: { ...settings, foldersEnabled: enabled },
       });
       setFoldersEnabled(enabled);
+      window.dispatchEvent(new Event("markch-settings-updated"));
     } catch {
       toast.error("Failed to update folder setting");
     } finally {
@@ -812,6 +817,211 @@ function FoldersToggle() {
         On
       </Button>
     </div>
+  );
+}
+
+function DocumentsSettings() {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  useEffect(() => {
+    invoke<Settings>("get_settings")
+      .then(setSettings)
+      .catch((error) => {
+        console.error("Failed to load document settings:", error);
+        setSettings({
+          theme: { mode: "system" },
+          documentsEnabled: false,
+          documentPageWordLimit: 800,
+          documentPageZoom: 1,
+        });
+      });
+  }, []);
+
+  const save = async (patch: Partial<Settings>) => {
+    if (!settings || isUpdating) return;
+    setIsUpdating(true);
+    const nextSettings = { ...settings, ...patch };
+    try {
+      await invoke("update_settings", { newSettings: nextSettings });
+      setSettings(nextSettings);
+      window.dispatchEvent(new Event("markch-settings-updated"));
+    } catch {
+      toast.error("Failed to update document setting");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const foldersEnabled = settings?.foldersEnabled === true;
+  const documentsEnabled = settings?.documentsEnabled === true;
+  const wordLimit = settings?.documentPageWordLimit ?? 800;
+  const pageZoom = settings?.documentPageZoom ?? 1;
+
+  return (
+    <div className="rounded-[10px] border border-border bg-bg-secondary p-4">
+      <div className="flex items-start justify-between gap-6">
+        <div className="flex flex-col gap-0.75">
+          <h3 className="text-base font-medium">Enable Documents</h3>
+          <p className="text-sm text-text-muted max-w-lg">
+            Use folders as Documents, where each markdown file inside the
+            folder is a page managed from a document sidebar.
+          </p>
+        </div>
+        <div className="flex gap-1 p-1 rounded-[10px] border border-border shrink-0">
+          <Button
+            onClick={() => save({ documentsEnabled: false })}
+            variant={!documentsEnabled ? "primary" : "ghost"}
+            size="xs"
+            disabled={isUpdating}
+          >
+            Off
+          </Button>
+          <Button
+            onClick={() => save({ documentsEnabled: true, foldersEnabled: true })}
+            variant={documentsEnabled ? "primary" : "ghost"}
+            size="xs"
+            disabled={isUpdating}
+          >
+            On
+          </Button>
+        </div>
+      </div>
+      {documentsEnabled && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <DocumentNumberStepper
+            label="Words per page"
+            value={wordLimit}
+            min={250}
+            max={2000}
+            step={50}
+            disabled={isUpdating}
+            onCommit={(value) => save({ documentPageWordLimit: value })}
+          />
+          <DocumentNumberStepper
+            label="Page zoom"
+            value={Math.round(pageZoom * 100)}
+            min={50}
+            max={150}
+            step={5}
+            suffix="%"
+            disabled={isUpdating}
+            onCommit={(value) => save({ documentPageZoom: value / 100 })}
+          />
+        </div>
+      )}
+      {!foldersEnabled && documentsEnabled && (
+        <p className="mt-3 text-xs text-text-muted">
+          Folders were enabled because Documents use folders as their container.
+        </p>
+      )}
+    </div>
+  );
+}
+
+interface DocumentNumberStepperProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix?: string;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function DocumentNumberStepper({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  disabled = false,
+  onCommit,
+}: DocumentNumberStepperProps) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = (rawValue: string) => {
+    const parsed = Number.parseInt(rawValue, 10);
+    const next = Number.isFinite(parsed)
+      ? clampNumber(Math.round(parsed), min, max)
+      : value;
+    setDraft(String(next));
+    if (next !== value) {
+      onCommit(next);
+    }
+  };
+
+  const stepValue = (direction: -1 | 1) => {
+    const next = clampNumber(value + direction * step, min, max);
+    setDraft(String(next));
+    if (next !== value) {
+      onCommit(next);
+    }
+  };
+
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <IconButton
+          type="button"
+          variant="outline"
+          size="md"
+          title={`Decrease ${label.toLowerCase()}`}
+          disabled={disabled || value <= min}
+          onClick={() => stepValue(-1)}
+        >
+          <MinusIcon className="w-4 h-4" />
+        </IconButton>
+        <div className="relative flex-1">
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={draft}
+            disabled={disabled}
+            onChange={(event) => {
+              const next = event.target.value.replace(/[^\d]/g, "");
+              setDraft(next);
+            }}
+            onBlur={() => commit(draft)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              } else if (event.key === "Escape") {
+                setDraft(String(value));
+                event.currentTarget.blur();
+              }
+            }}
+            className={`h-9 text-center tabular-nums [appearance:textfield] ${suffix ? "pr-8" : ""}`}
+          />
+          {suffix && (
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-text-muted">
+              {suffix}
+            </span>
+          )}
+        </div>
+        <IconButton
+          type="button"
+          variant="outline"
+          size="md"
+          title={`Increase ${label.toLowerCase()}`}
+          disabled={disabled || value >= max}
+          onClick={() => stepValue(1)}
+        >
+          <PlusIcon className="w-4 h-4" />
+        </IconButton>
+      </div>
+    </label>
   );
 }
 
